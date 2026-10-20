@@ -1,6 +1,5 @@
 package com.gathin.tvhome;
 
-import android.content.ActivityNotFoundException;
 import android.content.ComponentName;
 import android.content.Context;
 import android.content.Intent;
@@ -13,7 +12,6 @@ import android.graphics.Color;
 import android.graphics.Outline;
 import android.graphics.Rect;
 import android.graphics.drawable.Drawable;
-import android.net.Uri;
 import android.provider.Settings;
 import android.util.DisplayMetrics;
 import android.view.KeyEvent;
@@ -25,7 +23,6 @@ import android.view.animation.DecelerateInterpolator;
 import android.view.animation.OvershootInterpolator;
 import android.widget.ImageView;
 import android.widget.TextView;
-import android.widget.Toast;
 
 import androidx.annotation.NonNull;
 import androidx.recyclerview.widget.RecyclerView;
@@ -47,6 +44,10 @@ public class AppAdapter extends RecyclerView.Adapter<AppAdapter.Holder> {
 
     interface TileListener {
         void onTileFocused(int position, View card);
+
+        void onTileLaunch(Entry entry);
+
+        void onTileManage(Entry entry);
 
         /** Called for a D-pad direction key on a tile. Return true when handled (focus stays put). */
         boolean onTileVerticalKey(int position, int keyCode);
@@ -114,6 +115,7 @@ public class AppAdapter extends RecyclerView.Adapter<AppAdapter.Holder> {
     private final List<String> favourites;
     /** Never shown as tiles (res/values/config.xml, hidden_apps). */
     private final Set<String> hidden;
+    private final Set<String> protectedApps = new HashSet<>();
     private final boolean showHomeSettings;
     /** Calmer motion for weak GPUs (config.xml, reduced_motion): no overshoot, shorter fades. */
     private final boolean reducedMotion;
@@ -123,7 +125,7 @@ public class AppAdapter extends RecyclerView.Adapter<AppAdapter.Holder> {
         this.ctx = ctx;
         this.listener = listener;
         this.dockSize = dockSize;
-        this.favourites = cfg.dockApps;
+        this.favourites = new ArrayList<>(cfg.dockApps);
         this.hidden = new HashSet<>(cfg.hiddenApps);
         this.showHomeSettings = cfg.showHomeSettingsShortcut;
         this.reducedMotion = cfg.reducedMotion;
@@ -160,18 +162,7 @@ public class AppAdapter extends RecyclerView.Adapter<AppAdapter.Holder> {
                 fresh.add(new Entry(Cards.cleanLabel(String.valueOf(ri.loadLabel(pm)), pkg), component, banner, icon));
             }
         }
-        Collections.sort(fresh, (a, b) -> {
-            int fa = favourites.indexOf(a.pkg), fb = favourites.indexOf(b.pkg);
-            if (fa >= 0 || fb >= 0) {
-                if (fa < 0) return 1;
-                if (fb < 0) return -1;
-                return Integer.compare(fa, fb);
-            }
-            // Cards come right after the configured dock apps, before the alphabetical grid.
-            boolean ca = a.kind == Entry.CARD, cb = b.kind == Entry.CARD;
-            if (ca != cb) return ca ? -1 : 1;
-            return a.label.compareToIgnoreCase(b.label);
-        });
+        Collections.sort(fresh, this::compareEntries);
         // Optional "Default home" tile (config.xml), only when this TV actually has a home-screen picker.
         if (showHomeSettings
                 && pm.resolveActivity(new Intent(Settings.ACTION_HOME_SETTINGS), 0) != null) {
@@ -242,34 +233,15 @@ public class AppAdapter extends RecyclerView.Adapter<AppAdapter.Holder> {
             h.label.setText(e.label);
             h.label.setVisibility(View.VISIBLE);
         }
-        h.card.setOnClickListener(v -> launch(e));
+        h.lockBadge.setVisibility(e.kind != Entry.HOME_SETTINGS && protectedApps.contains(e.pkg) ? View.VISIBLE : View.GONE);
+        h.card.setOnClickListener(v -> {
+            if (listener != null) listener.onTileLaunch(e);
+        });
         h.card.setOnLongClickListener(v -> {
-            Intent i = new Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS, Uri.parse("package:" + e.pkg));
-            i.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
-            try {
-                ctx.startActivity(i);
-            } catch (ActivityNotFoundException ignored) {
-            }
+            if (e.kind == Entry.HOME_SETTINGS) return false;
+            if (listener != null) listener.onTileManage(e);
             return true;
         });
-    }
-
-    /** Opens the tile's activity by explicit component, with no extras: a card can name nothing else. */
-    private void launch(Entry e) {
-        if (e.kind == Entry.HOME_SETTINGS) {
-            ctx.startActivity(new Intent(ctx, HomeSettingsActivity.class)
-                    .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK));
-            return;
-        }
-        Intent i = new Intent(Intent.ACTION_MAIN)
-                .addCategory(Intent.CATEGORY_LEANBACK_LAUNCHER)
-                .setComponent(e.component)
-                .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_ACTIVITY_RESET_TASK_IF_NEEDED);
-        try {
-            ctx.startActivity(i);
-        } catch (Exception ex) {
-            Toast.makeText(ctx, ctx.getString(R.string.cant_open, e.label), Toast.LENGTH_SHORT).show();
-        }
     }
 
     @Override
@@ -298,6 +270,45 @@ public class AppAdapter extends RecyclerView.Adapter<AppAdapter.Holder> {
 
     String labelAt(int position) {
         return position >= 0 && position < items.size() ? items.get(position).label : "";
+    }
+
+    void setDockOrder(List<String> order) {
+        favourites.clear();
+        if (order != null) favourites.addAll(order);
+    }
+
+    void refreshOrder() {
+        Collections.sort(items, this::compareEntries);
+        notifyDataSetChanged();
+    }
+
+    void setHiddenApps(Set<String> packages) {
+        hidden.clear();
+        if (packages != null) hidden.addAll(packages);
+    }
+
+    void setProtectedApps(Set<String> packages) {
+        protectedApps.clear();
+        if (packages != null) protectedApps.addAll(packages);
+        notifyDataSetChanged();
+    }
+
+    private int compareEntries(Entry a, Entry b) {
+        if (a.kind == Entry.HOME_SETTINGS || b.kind == Entry.HOME_SETTINGS) {
+            if (a.kind == b.kind) return 0;
+            return a.kind == Entry.HOME_SETTINGS ? 1 : -1;
+        }
+        int fa = favourites.indexOf(a.pkg), fb = favourites.indexOf(b.pkg);
+        if (fa >= 0 || fb >= 0) {
+            if (fa < 0) return 1;
+            if (fb < 0) return -1;
+            int order = Integer.compare(fa, fb);
+            if (order != 0) return order;
+        }
+        // Cards come right after the configured dock apps, before the alphabetical grid.
+        boolean ca = a.kind == Entry.CARD, cb = b.kind == Entry.CARD;
+        if (ca != cb) return ca ? -1 : 1;
+        return a.label.compareToIgnoreCase(b.label);
     }
 
     /** A vivid colour sampled from the app's banner (or icon), cached per entry; a card's accent when it set one. */
@@ -361,6 +372,7 @@ public class AppAdapter extends RecyclerView.Adapter<AppAdapter.Holder> {
         final ImageView icon;
         final TextView label;
         final TextView name;
+        final ImageView lockBadge;
         final boolean reducedMotion;
 
         Holder(View v, TileListener listener, boolean reducedMotion) {
@@ -370,6 +382,7 @@ public class AppAdapter extends RecyclerView.Adapter<AppAdapter.Holder> {
             icon = v.findViewById(R.id.icon);
             label = v.findViewById(R.id.label);
             name = v.findViewById(R.id.name);
+            lockBadge = v.findViewById(R.id.lockBadge);
             this.reducedMotion = reducedMotion;
 
             final float density = v.getResources().getDisplayMetrics().density;

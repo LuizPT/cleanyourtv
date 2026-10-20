@@ -47,6 +47,18 @@
             android:textSize="13sp"
             android:fontFamily="@font/outfit"
             android:visibility="gone" />
+
+        <ImageView
+            android:id="@+id/lockBadge"
+            android:layout_width="30dp"
+            android:layout_height="30dp"
+            android:layout_gravity="top|end"
+            android:layout_margin="8dp"
+            android:padding="5dp"
+            android:background="@drawable/lock_badge_bg"
+            android:src="@drawable/ic_lock"
+            android:contentDescription="@string/protected_by_pin"
+            android:visibility="gone" />
     </FrameLayout>
 
     <TextView

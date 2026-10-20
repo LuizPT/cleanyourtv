@@ -1,10 +1,42 @@
 tools/venv/
 tools/adbkey/
+**/adbkey
+**/adbkey.pub
 __pycache__/
 launcher/.gradle/
 launcher/build/
 launcher/app/build/
 launcher/local.properties
+**/.gradle/
+**/build/
+
+# Local credentials and signing material
+.env
+.env.*
+!.env.example
+!**/.env.example
+*.jks
+*.keystore
+*.p12
+*.pfx
+*.pem
+*.key
+
+# Generated packages, logs and device diagnostics
+*.apk
+!examples/**/*.apk
+*.aab
+*.apks
+*.log
+*.out
+*.dump
+*.dmp
+*.hprof
+*.tombstone
+*.pcap
+*.pcapng
 # your own TV's dumps (serial, android_id, device names) stay local
 backup/
+/tv-dumps/
+/device-dumps/
 .DS_Store

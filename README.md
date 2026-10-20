@@ -1,3 +1,37 @@
+# CleanYourTV 2.4 — personalização de LuizPT
+
+Este fork é uma personalização do launcher CleanYourTV, baseada no projeto original de [Gathin23](https://github.com/Gathin23/cleanyourtv). Mantém a licença MIT e a atribuição ao projeto original; as alterações específicas desta versão são mantidas por LuizPT.
+
+Esta edição acrescenta organização do ecrã inicial e controlo parental simples, com interface em português de Portugal e inglês como alternativa. Foi preparada para Android TV 9 (API 28) e validada numa Xiaomi Mi TV 4S. A aplicação mantém o `applicationId` `com.gathin.tvhome`, usa JDK 17 e Android SDK 34 para compilação e tem 54 testes automatizados aprovados na execução anterior.
+
+## Funcionalidades desta personalização
+
+- Manter OK premido numa aplicação da Home abre as opções para mover, ocultar/mostrar, proteger/remover proteção por PIN ou abrir as informações da aplicação.
+- A biblioteca compacta mostra ícones, nomes e os estados «No ecrã inicial», «Oculta» e «Protegida»; aplicações ocultas podem ser recuperadas sem as voltar a instalar.
+- A ordem, visibilidade e aplicações protegidas ficam guardadas no armazenamento privado da aplicação e persistem após reinício. O PIN não tem valor predefinido: é criado na TV, tem 4 a 6 algarismos, é derivado com salt e sujeito a bloqueio progressivo após falhas.
+- A autenticação é pedida ao abrir aplicações protegidas e ao gerir as respetivas opções através do launcher. Os dados do controlo parental ficam no dispositivo; não há serviço de controlo parental em segundo plano.
+
+### Limites do controlo parental
+
+O PIN só controla os acessos realizados através deste launcher. As Definições do Android, outro ecrã inicial, o Assistente, notificações, aplicações recentes ou outra aplicação podem abrir uma aplicação protegida sem passar pelo PIN; uma aplicação protegida também pode iniciar outras aplicações. Não substitui os controlos parentais ou de gestão do dispositivo do Android. Consulte [os detalhes e limitações](docs/parental-controls.md).
+
+### Compilar e instalar
+
+Instale JDK 17, Android SDK Platform 34 e ADB. Ative a depuração ADB na TV e ligue o computador à mesma rede. No Windows:
+
+```powershell
+cd launcher
+.\gradlew.bat assembleRelease
+adb connect <IP_DA_TV>:5555
+adb install -r .\app\build\outputs\apk\release\app-release.apk
+```
+
+No macOS ou Linux, use `./gradlew assembleRelease` no diretório `launcher` e o caminho do APK equivalente. Depois selecione CleanYourTV como aplicação de ecrã inicial nas definições da TV. Estes passos instalam apenas o launcher; os scripts de desativação de pacotes descritos abaixo são opcionais e não são necessários para estas funcionalidades.
+
+O `adb install -r` preserva os dados da aplicação apenas se o pacote já instalado tiver a mesma assinatura. A configuração de release deste repositório usa a chave debug local, que não está incluída; mantenha a mesma chave privada para atualizações e nunca a adicione ao Git. Não são distribuídos APKs neste repositório.
+
+---
+
 <p align="center">
   <a href="https://cleanyour.tv"><img src="https://raw.githubusercontent.com/Gathin23/cleanyourtv/main/docs/banner.png" alt="CleanYourTV. Your TV, minus the ads." width="800"></a>
 </p>
@@ -211,9 +245,11 @@ the install script finds `~/Android/Sdk` and the `java` on your PATH.
 
 - **Configure** in [`config.xml`](launcher/app/src/main/res/values/config.xml): dock order, hidden apps, the Live TV package, columns (tiles shrink from 5 up), rows under the dock, an optional VPN app for the network pill, and `reduced_motion` for TVs whose GPU cannot keep up.
 - **Themes** set the same keys plus a background colour and a wallpaper from a `config.json` pushed to the TV, no rebuild. Three ship in [`themes/`](themes/), documented there.
-- **Language** follows the TV: English, German, Spanish, Catalan, French, Russian, Serbian (Latin), Polish, Arabic, Simplified Chinese, Thai, Turkish. Android 13+ can set it for the launcher alone: `tools/tv.py 'cmd locale set-app-locales com.gathin.tvhome --locales ca'`.
+- **Language** follows the TV: English, Portuguese (Portugal), German, Spanish, Catalan, French, Russian, Serbian (Latin), Polish, Arabic, Simplified Chinese, Thai, Turkish. Android 13+ can set it for the launcher alone: `tools/tv.py 'cmd locale set-app-locales com.gathin.tvhome --locales ca'`.
   Russian includes the module-card approval and management screens and the VPN-off badge.
 - **Module cards** let any TV app declare its own tile (label, caption, glow). The launcher asks you once per app, Keep hidden by default, and remembers the answer for that app's signing key and card name. Hold OK on Settings to change your mind. How to make one: [`docs/modules.md`](docs/modules.md); the contract: [`docs/specs/card.md`](docs/specs/card.md).
+- **Home order and app library**: hold OK on Settings to open Settings, then choose Organize or Apps. Hold OK on an app for Move, Hide, PIN protection, or App information. The library uses one row per app and lets you restore hidden apps. Order and visibility choices persist on the TV.
+- **Parental controls**: create a 4–6 digit PIN, protect selected apps and guard their Home launch and app-management entry. Hidden apps and PIN-protected apps have separate status. Limits of launcher-level controls: [`docs/parental-controls.md`](docs/parental-controls.md).
 - **Clock screensaver**: a drifting clock over the glow, so nothing burns in. Pick "Clock" in the TV's screensaver settings, or over ADB:
   `tools/tv.py 'settings put secure screensaver_components com.gathin.tvhome/.ClockDream; settings put secure screensaver_enabled 1'`
 - **Remote keys**: an optional accessibility service keeps the remote's Input button working on Google TV (`INPUT_KEY_SERVICE=1` at install), another fixes sticks whose Home key sends ALL_APPS and opens Settings from the remote's gear button, even one Android does not map (`HOME_KEY_SERVICE=1`, scancodes in `config.xml`).
@@ -304,4 +340,5 @@ The people whose work is in this repo:
 ## Licence
 
 MIT, see [`LICENSE`](LICENSE). The Outfit typeface is under the SIL Open Font License, see
-`launcher/FONT-LICENSE-OFL.txt`.
+`launcher/FONT-LICENSE-OFL.txt`. AndroidX RecyclerView and DynamicAnimation are licensed under
+Apache 2.0; see [`THIRD_PARTY_NOTICES.md`](THIRD_PARTY_NOTICES.md).

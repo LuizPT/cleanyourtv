@@ -9,6 +9,7 @@ import android.content.Context;
 import android.content.Intent;
 import android.content.IntentFilter;
 import android.content.pm.ApplicationInfo;
+import android.content.pm.ResolveInfo;
 import android.graphics.Bitmap;
 import android.graphics.Canvas;
 import android.graphics.Color;
@@ -48,6 +49,8 @@ import android.widget.FrameLayout;
 import android.widget.ImageView;
 import android.widget.LinearLayout;
 import android.widget.PopupWindow;
+import android.widget.ScrollView;
+import android.widget.CheckBox;
 import android.widget.TextView;
 import android.widget.Toast;
 
@@ -61,6 +64,7 @@ import androidx.recyclerview.widget.RecyclerView;
 
 import java.io.File;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.Calendar;
 import java.util.Collections;
 import java.util.HashSet;
@@ -75,6 +79,8 @@ public class MainActivity extends Activity implements AppAdapter.TileListener {
 
     /** Tiles per row and dock slots (res/values/config.xml, columns). Set in onCreate. */
     static int COLUMNS = 4;
+    static final String ACTION_SHOW_INPUTS = "com.gathin.tvhome.action.SHOW_INPUTS";
+    static final String ACTION_OPEN_SETTINGS = "com.gathin.tvhome.action.OPEN_SETTINGS";
     private static final long MINUTE_MS = 60_000L;
     private String liveTvPkg;
     private String liveTvAction;
@@ -83,6 +89,10 @@ public class MainActivity extends Activity implements AppAdapter.TileListener {
     private String sourcePanelAction;
 
     private AppAdapter adapter;
+    private LauncherState launcherState;
+    private List<String> defaultDockOrder = Collections.emptyList();
+    private Set<String> configuredHiddenApps = Collections.emptySet();
+    private Set<String> protectedApps = Collections.emptySet();
     private RecyclerView grid;
     private FrameLayout root;
     private GlassView glass;
@@ -186,6 +196,9 @@ public class MainActivity extends Activity implements AppAdapter.TileListener {
         density = getResources().getDisplayMetrics().density;
         // config.xml, overlaid by config.json from a pushed theme (see Config and tools/theme.sh).
         Config cfg = Config.load(this);
+        launcherState = new LauncherState(new File(getFilesDir(), "launcher-state.properties"));
+        defaultDockOrder = new ArrayList<>(cfg.dockApps);
+        protectedApps = new HashSet<>(launcherState.protectedApps());
         COLUMNS = cfg.columns;
         reducedMotion = cfg.reducedMotion;
         liveTvPkg = cfg.liveTvPackage;
@@ -212,7 +225,8 @@ public class MainActivity extends Activity implements AppAdapter.TileListener {
         }
         vpnApp = cfg.vpnApp;
         moduleCards = cfg.moduleCards;
-        hiddenApps = new HashSet<>(cfg.hiddenApps);
+        configuredHiddenApps = new HashSet<>(cfg.hiddenApps);
+        hiddenApps = new HashSet<>(launcherState.effectiveHiddenApps(configuredHiddenApps));
 
         grid = findViewById(R.id.grid);
         grid.setLayoutManager(new GridLayoutManager(this, COLUMNS));
@@ -224,6 +238,8 @@ public class MainActivity extends Activity implements AppAdapter.TileListener {
         grid.setLayoutAnimation(new LayoutAnimationController(
                 AnimationUtils.loadAnimation(this, enterAnim), enterDelay));
         adapter = new AppAdapter(this, this, COLUMNS, cfg);
+        adapter.setDockOrder(launcherState.dockOrder(defaultDockOrder));
+        adapter.setProtectedApps(protectedApps);
         grid.setAdapter(adapter);
 
         // tvOS layout: push the dock row towards the bottom of the screen, leaving room for
@@ -287,8 +303,7 @@ public class MainActivity extends Activity implements AppAdapter.TileListener {
         });
         btnSettings.setOnClickListener(v -> open(systemIntent(Settings.ACTION_SETTINGS)));
         btnSettings.setOnLongClickListener(v -> {
-            if (!moduleCards) return false;   // off: a long press does nothing, as before the feature
-            showModuleCards();
+            showLauncherTools();
             return true;
         });
 
@@ -334,6 +349,11 @@ public class MainActivity extends Activity implements AppAdapter.TileListener {
                     .removeCapability(NetworkCapabilities.NET_CAPABILITY_NOT_VPN)
                     .build(), vpnCallback);
         }
+        Intent initial = getIntent();
+        if (initial != null && (ACTION_SHOW_INPUTS.equals(initial.getAction())
+                || ACTION_OPEN_SETTINGS.equals(initial.getAction()))) {
+            root.post(() -> handleLauncherAction(initial));
+        }
     }
 
     /**
@@ -370,10 +390,26 @@ public class MainActivity extends Activity implements AppAdapter.TileListener {
     @Override
     protected void onNewIntent(Intent intent) {
         super.onNewIntent(intent);
+        setIntent(intent);
+        if (handleLauncherAction(intent)) return;
         if (intent == null || !intent.hasCategory(Intent.CATEGORY_HOME)) return;
         grid.scrollToPosition(0);
         lastFocused = 0;
         lastFocusedKey = adapter.getItemCount() > 0 ? adapter.keyAt(0) : null;
+    }
+
+    private boolean handleLauncherAction(Intent intent) {
+        if (intent == null) return false;
+        if (ACTION_SHOW_INPUTS.equals(intent.getAction())) {
+            if (btnInputs.getVisibility() == View.VISIBLE) showInputs();
+            else Toast.makeText(this, R.string.no_inputs, Toast.LENGTH_SHORT).show();
+            return true;
+        }
+        if (ACTION_OPEN_SETTINGS.equals(intent.getAction())) {
+            open(systemIntent(Settings.ACTION_SETTINGS));
+            return true;
+        }
+        return false;
     }
 
     @Override
@@ -435,6 +471,7 @@ public class MainActivity extends Activity implements AppAdapter.TileListener {
         final int returnSlot = lastFocused;
         final List<Cards.Card> none = Collections.emptyList();
         cards = moduleCards ? CardFeature.run(() -> Cards.discover(this, hiddenApps, Cards.load(Cards.storeFile(this))), none) : none;
+        adapter.setHiddenApps(hiddenApps);
         adapter.reload(cards.isEmpty() ? none : CardFeature.run(() -> Cards.shown(cards), none));
         lastFocusedKey = returnKey;
         lastFocused = returnSlot;
@@ -468,7 +505,10 @@ public class MainActivity extends Activity implements AppAdapter.TileListener {
     @Override
     public void onWindowFocusChanged(boolean hasFocus) {
         super.onWindowFocusChanged(hasFocus);
-        if (hasFocus) showCardPrompt();
+        if (hasFocus) {
+            showCardPrompt();
+            if (cardPrompt == null) maybeShowContextHint();
+        }
     }
 
     @Override
@@ -489,6 +529,681 @@ public class MainActivity extends Activity implements AppAdapter.TileListener {
     }
 
     // ---- glass highlight -------------------------------------------------------------------------
+
+    @Override
+    public void onTileLaunch(AppAdapter.Entry entry) {
+        openTile(entry);
+    }
+
+    @Override
+    public void onTileManage(AppAdapter.Entry entry) {
+        showAppContextMenu(entry.pkg, entry.label, false);
+    }
+
+    private void openTile(AppAdapter.Entry entry) {
+        if (entry.kind == AppAdapter.Entry.HOME_SETTINGS) {
+            open(systemIntent(Settings.ACTION_HOME_SETTINGS));
+            return;
+        }
+        Runnable launch = () -> {
+            Intent intent = new Intent(Intent.ACTION_MAIN)
+                    .addCategory(Intent.CATEGORY_LEANBACK_LAUNCHER)
+                    .setComponent(entry.component)
+                    .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_ACTIVITY_RESET_TASK_IF_NEEDED);
+            performOpen(intent);
+        };
+        requirePin(entry.pkg, entry.label, false, launch);
+    }
+
+    void openFromLibrary(String pkg, ComponentName component, String label) {
+        openTile(new AppAdapter.Entry(label, component, null, null));
+    }
+
+    boolean onDockOrderChanged(List<String> order) {
+        if (!launcherState.saveDockOrder(order)) {
+            Toast.makeText(this, R.string.settings_not_saved, Toast.LENGTH_SHORT).show();
+            return false;
+        }
+        adapter.setDockOrder(order);
+        adapter.refreshOrder();
+        int focused = adapter.positionOf(lastFocusedKey);
+        if (focused >= 0) lastFocused = focused;
+        return true;
+    }
+
+    void showLibraryContextMenu(String pkg, String label) {
+        showAppContextMenu(pkg, label, true);
+    }
+
+    private void showAppContextMenu(String pkg, String label, boolean inLibrary) {
+        Runnable showMenu = () -> showAppContextMenuDialog(pkg, label, inLibrary);
+        if (LauncherState.requiresPin(protectedApps, pkg)) requirePin(pkg, label, true, showMenu);
+        else showMenu.run();
+    }
+
+    private void showAppContextMenuDialog(String pkg, String label, boolean inLibrary) {
+        boolean hidden = hiddenApps.contains(pkg);
+        boolean protectedApp = protectedApps.contains(pkg);
+        boolean pinned = launcherState.dockOrder(defaultDockOrder).contains(pkg);
+        List<AppActionPolicy.Action> actions = AppActionPolicy.contextActions(inLibrary, hidden, protectedApp, pinned);
+
+        Dialog dialog = new Dialog(this);
+        dialog.requestWindowFeature(Window.FEATURE_NO_TITLE);
+        LinearLayout panel = new LinearLayout(this);
+        panel.setOrientation(LinearLayout.VERTICAL);
+        int pad = (int) (20 * density);
+        panel.setPadding(pad, pad, pad, (int) (12 * density));
+        panel.setBackgroundResource(R.drawable.glass_panel);
+        TextView title = new TextView(this);
+        title.setText(label);
+        title.setTextColor(Color.WHITE);
+        title.setTextSize(21);
+        title.setSingleLine(true);
+        title.setEllipsize(TextUtils.TruncateAt.END);
+        panel.addView(title, new LinearLayout.LayoutParams(-1, -2));
+        View first = null;
+        for (AppActionPolicy.Action action : actions) {
+            TextView option = actionOption(action, () -> {
+                dialog.dismiss();
+                runAppAction(action, pkg, label, protectedApp);
+            });
+            if (first == null) first = option;
+            LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(-1, -2);
+            lp.topMargin = (int) (6 * density);
+            panel.addView(option, lp);
+        }
+        dialog.setContentView(panel);
+        dialog.setCanceledOnTouchOutside(false);
+        Window window = dialog.getWindow();
+        if (window != null) {
+            window.setBackgroundDrawable(new ColorDrawable(Color.TRANSPARENT));
+            window.setDimAmount(0.65f);
+        }
+        dialog.show();
+        if (window != null) window.setLayout((int) (430 * density), ViewGroup.LayoutParams.WRAP_CONTENT);
+        if (first != null) first.requestFocus();
+    }
+
+    private TextView actionOption(AppActionPolicy.Action action, Runnable onClick) {
+        int label;
+        switch (action) {
+            case MOVE: label = R.string.context_move; break;
+            case HIDE: label = R.string.context_hide; break;
+            case SHOW: label = R.string.context_show; break;
+            case PROTECT: label = R.string.context_protect; break;
+            case UNPROTECT: label = R.string.context_unprotect; break;
+            case ADD_TO_HOME: label = R.string.context_add_home; break;
+            case REMOVE_FROM_HOME: label = R.string.context_remove_home; break;
+            default: label = R.string.context_app_info; break;
+        }
+        TextView option = new TextView(this);
+        option.setText(label);
+        option.setTextColor(Color.WHITE);
+        option.setTextSize(17);
+        option.setGravity(Gravity.CENTER_VERTICAL);
+        option.setPadding((int) (14 * density), (int) (10 * density), (int) (14 * density), (int) (10 * density));
+        option.setBackgroundResource(R.drawable.focus_row_bg);
+        option.setFocusable(true);
+        option.setClickable(true);
+        option.setOnClickListener(v -> onClick.run());
+        return option;
+    }
+
+    private void runAppAction(AppActionPolicy.Action action, String pkg, String label,
+                              boolean alreadyAuthenticated) {
+        switch (action) {
+            case MOVE:
+                moveAppToDockAndShowControls(pkg);
+                break;
+            case HIDE:
+                setAppVisibility(pkg, false);
+                break;
+            case SHOW:
+                setAppVisibility(pkg, true);
+                break;
+            case PROTECT:
+                toggleAppProtection(pkg, label, alreadyAuthenticated);
+                break;
+            case UNPROTECT:
+                toggleAppProtection(pkg, label, alreadyAuthenticated);
+                break;
+            case APP_INFO:
+                Intent details = new Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS,
+                        Uri.parse("package:" + pkg));
+                performOpen(details);
+                break;
+            case ADD_TO_HOME:
+                setHomeShortcut(pkg, true);
+                break;
+            case REMOVE_FROM_HOME:
+                setHomeShortcut(pkg, false);
+                break;
+        }
+    }
+
+    private void setAppVisibility(String pkg, boolean visible) {
+        if (!launcherState.setAppHidden(pkg, !visible, configuredHiddenApps)) {
+            Toast.makeText(this, R.string.settings_not_saved, Toast.LENGTH_SHORT).show();
+            return;
+        }
+        hiddenApps = new HashSet<>(launcherState.effectiveHiddenApps(configuredHiddenApps));
+        reloadApps(true);
+        Toast.makeText(this, visible ? R.string.app_shown_on_home : R.string.app_hidden_from_home,
+                Toast.LENGTH_SHORT).show();
+    }
+
+    private void setHomeShortcut(String pkg, boolean add) {
+        List<String> order = new ArrayList<>(launcherState.dockOrder(defaultDockOrder));
+        if (add) {
+            if (order.contains(pkg)) return;
+            if (activeDockCount(order) >= COLUMNS) {
+                Toast.makeText(this, R.string.home_shortcuts_full, Toast.LENGTH_SHORT).show();
+                return;
+            }
+            order.add(pkg);
+        } else if (!order.remove(pkg)) return;
+        onDockOrderChanged(order);
+    }
+
+    private int activeDockCount(List<String> order) {
+        int count = 0;
+        for (String pkg : order) if (!hiddenApps.contains(pkg)) count++;
+        return count;
+    }
+
+    private void moveAppToDockAndShowControls(String pkg) {
+        List<String> order = new ArrayList<>(launcherState.dockOrder(defaultDockOrder));
+        if (!order.contains(pkg)) {
+            if (activeDockCount(order) >= COLUMNS) {
+                Toast.makeText(this, R.string.home_shortcuts_full, Toast.LENGTH_SHORT).show();
+                return;
+            }
+            order.add(pkg);
+            if (!onDockOrderChanged(order)) return;
+        }
+        showMoveOptions(pkg);
+    }
+
+    private void showMoveOptions(String pkg) {
+        List<String> order = launcherState.dockOrder(defaultDockOrder);
+        int index = order.indexOf(pkg);
+        if (index < 0) return;
+        String label = appLabel(pkg);
+        Dialog dialog = new Dialog(this);
+        dialog.requestWindowFeature(Window.FEATURE_NO_TITLE);
+        LinearLayout panel = new LinearLayout(this);
+        panel.setOrientation(LinearLayout.VERTICAL);
+        int pad = (int) (20 * density);
+        panel.setPadding(pad, pad, pad, (int) (12 * density));
+        panel.setBackgroundResource(R.drawable.glass_panel);
+        dialog.setContentView(panel);
+        dialog.setCanceledOnTouchOutside(false);
+        Window window = dialog.getWindow();
+        if (window != null) {
+            window.setBackgroundDrawable(new ColorDrawable(Color.TRANSPARENT));
+            window.setDimAmount(0.65f);
+        }
+        Runnable[] render = new Runnable[1];
+        render[0] = () -> {
+            panel.removeAllViews();
+            TextView title = new TextView(this);
+            title.setText(getString(R.string.move_app_title, label));
+            title.setTextColor(Color.WHITE);
+            title.setTextSize(21);
+            panel.addView(title, new LinearLayout.LayoutParams(-1, -2));
+            List<String> current = launcherState.dockOrder(defaultDockOrder);
+            int at = current.indexOf(pkg);
+            TextView position = new TextView(this);
+            position.setText(getString(R.string.move_app_position, Math.max(1, at + 1), current.size()));
+            position.setTextColor(0xFFD8DDE5);
+            position.setTextSize(14);
+            LinearLayout.LayoutParams posLp = new LinearLayout.LayoutParams(-1, -2);
+            posLp.topMargin = (int) (4 * density);
+            panel.addView(position, posLp);
+            TextView up = actionOption(AppActionPolicy.Action.MOVE, () -> moveDockStep(pkg, -1, render[0]));
+            up.setText(R.string.move_up);
+            up.setEnabled(at > 0);
+            TextView down = actionOption(AppActionPolicy.Action.MOVE, () -> moveDockStep(pkg, 1, render[0]));
+            down.setText(R.string.move_down);
+            down.setEnabled(at >= 0 && at < current.size() - 1);
+            TextView close = actionOption(AppActionPolicy.Action.APP_INFO, dialog::dismiss);
+            close.setText(R.string.close);
+            for (TextView option : new TextView[]{up, down, close}) {
+                LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(-1, -2);
+                lp.topMargin = (int) (6 * density);
+                panel.addView(option, lp);
+            }
+            panel.setTag(at > 0 ? up : at < current.size() - 1 ? down : close);
+            panel.post(() -> {
+                View target = (View) panel.getTag();
+                if (target != null) target.requestFocus();
+            });
+        };
+        render[0].run();
+        dialog.show();
+        if (window != null) window.setLayout((int) (430 * density), ViewGroup.LayoutParams.WRAP_CONTENT);
+        panel.post(() -> {
+            View target = (View) panel.getTag();
+            if (target != null) target.requestFocus();
+        });
+    }
+
+    void showMoveOptionsFromLibrary(String pkg) {
+        String label = appLabel(pkg);
+        Runnable move = () -> showMoveOptions(pkg);
+        if (LauncherState.requiresPin(protectedApps, pkg)) requirePin(pkg, label, true, move);
+        else move.run();
+    }
+
+    private void moveDockStep(String pkg, int delta, Runnable rerender) {
+        List<String> current = launcherState.dockOrder(defaultDockOrder);
+        List<String> moved = LauncherState.moveDock(current, pkg, delta);
+        if (!moved.equals(current) && onDockOrderChanged(moved)) rerender.run();
+    }
+
+    private void toggleAppProtection(String pkg, String label, boolean alreadyAuthenticated) {
+        if (!parentalStateAvailable()) return;
+        Runnable save = () -> {
+            Set<String> changed = new HashSet<>(protectedApps);
+            boolean protecting = !changed.contains(pkg);
+            if (protecting) changed.add(pkg);
+            else changed.remove(pkg);
+            if (!launcherState.saveProtectedApps(changed)) {
+                Toast.makeText(this, R.string.pin_not_saved, Toast.LENGTH_SHORT).show();
+                return;
+            }
+            protectedApps = changed;
+            adapter.setProtectedApps(protectedApps);
+            Toast.makeText(this, protecting ? R.string.app_protected : R.string.app_unprotected,
+                    Toast.LENGTH_SHORT).show();
+        };
+        if (alreadyAuthenticated) save.run();
+        else if (launcherState.isPinConfigured()) authenticate(getString(R.string.pin_manage_app, label), save);
+        else if (!protectedApps.isEmpty())
+            Toast.makeText(this, R.string.parental_state_unavailable, Toast.LENGTH_SHORT).show();
+        else setupPin(save);
+    }
+
+    private void maybeShowContextHint() {
+        if (launcherState != null && launcherState.markContextHintShown()) {
+            Toast.makeText(this, R.string.context_hint, Toast.LENGTH_LONG).show();
+        }
+    }
+
+    private void showLauncherTools() {
+        Dialog dialog = new Dialog(this);
+        dialog.requestWindowFeature(Window.FEATURE_NO_TITLE);
+        LinearLayout panel = new LinearLayout(this);
+        panel.setOrientation(LinearLayout.VERTICAL);
+        panel.setPadding((int) (22 * density), (int) (18 * density), (int) (22 * density), (int) (14 * density));
+        panel.setBackgroundResource(R.drawable.glass_panel);
+        TextView title = new TextView(this);
+        title.setText(R.string.settings);
+        title.setTextColor(Color.WHITE);
+        title.setTextSize(23);
+        panel.addView(title, new LinearLayout.LayoutParams(-1, -2));
+        TextView help = new TextView(this);
+        help.setText(R.string.tools_help);
+        help.setTextColor(0xFFD8DDE5);
+        help.setTextSize(14);
+        LinearLayout.LayoutParams helpLp = new LinearLayout.LayoutParams(-1, -2);
+        helpLp.topMargin = (int) (3 * density);
+        panel.addView(help, helpLp);
+        addToolOption(panel, R.string.organize_apps, () -> {
+            dialog.dismiss();
+            showAppLibrary(true);
+        });
+        addToolOption(panel, R.string.applications, () -> {
+            dialog.dismiss();
+            showAppLibrary(false);
+        });
+        addToolOption(panel, R.string.parental_control, () -> {
+            dialog.dismiss();
+            showParentalControl();
+        });
+        if (moduleCards) addToolOption(panel, R.string.module_cards, () -> {
+            dialog.dismiss();
+            showModuleCards();
+        });
+        addToolOption(panel, R.string.close, dialog::dismiss);
+        dialog.setContentView(panel);
+        dialog.setCanceledOnTouchOutside(false);
+        Window window = dialog.getWindow();
+        if (window != null) {
+            window.setBackgroundDrawable(new ColorDrawable(Color.TRANSPARENT));
+            window.setDimAmount(0.65f);
+        }
+        dialog.show();
+        if (window != null) window.setLayout((int) (420 * density), ViewGroup.LayoutParams.WRAP_CONTENT);
+        panel.getChildAt(2).requestFocus();
+    }
+
+    private void addToolOption(LinearLayout panel, int labelRes, Runnable action) {
+        TextView option = new TextView(this);
+        option.setText(labelRes);
+        option.setTextColor(Color.WHITE);
+        option.setTextSize(17);
+        option.setGravity(Gravity.CENTER_VERTICAL);
+        option.setPadding((int) (14 * density), (int) (10 * density), (int) (14 * density), (int) (10 * density));
+        option.setBackgroundResource(R.drawable.focus_row_bg);
+        option.setFocusable(true);
+        option.setClickable(true);
+        option.setOnClickListener(v -> action.run());
+        LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(-1, -2);
+        lp.topMargin = (int) (6 * density);
+        panel.addView(option, lp);
+    }
+
+    private void showAppLibrary(boolean orderOnly) {
+        AppLibraryDialog.show(this, orderOnly, launcherState.dockOrder(defaultDockOrder), hiddenApps, protectedApps);
+    }
+
+    private void requirePin(String pkg, String label, boolean management, Runnable allowed) {
+        if (!parentalStateAvailable()) return;
+        if (!LauncherState.requiresPin(protectedApps, pkg)) {
+            allowed.run();
+            return;
+        }
+        if (!launcherState.isPinConfigured()) {
+            if (!protectedApps.isEmpty()) {
+                Toast.makeText(this, R.string.parental_state_unavailable, Toast.LENGTH_SHORT).show();
+                return;
+            }
+            setupPin(allowed);
+            return;
+        }
+        authenticate(getString(management ? R.string.pin_manage_app : R.string.pin_unlock_app, label), allowed);
+    }
+
+    private void authenticate(String title, Runnable allowed) {
+        if (!parentalStateAvailable()) return;
+        if (!launcherState.isPinConfigured()) {
+            if (!protectedApps.isEmpty()) {
+                Toast.makeText(this, R.string.parental_state_unavailable, Toast.LENGTH_SHORT).show();
+                return;
+            }
+            setupPin(allowed);
+            return;
+        }
+        showPinEntry(title, pin -> {
+            LauncherState.PinResult result = launcherState.verifyPin(pin, System.currentTimeMillis());
+            Arrays.fill(pin, '\0');
+            if (result == LauncherState.PinResult.MATCH) {
+                allowed.run();
+            } else if (result == LauncherState.PinResult.LOCKED) {
+                long ms = launcherState.lockRemainingMs(System.currentTimeMillis());
+                int seconds = (int) Math.max(1L, (ms + 999L) / 1000L);
+                Toast.makeText(this, getString(R.string.pin_locked, seconds), Toast.LENGTH_LONG).show();
+            } else if (result == LauncherState.PinResult.NOT_CONFIGURED) {
+                if (protectedApps.isEmpty()) setupPin(allowed);
+                else Toast.makeText(this, R.string.parental_state_unavailable, Toast.LENGTH_SHORT).show();
+            } else if (result == LauncherState.PinResult.ERROR) {
+                Toast.makeText(this, R.string.parental_state_unavailable, Toast.LENGTH_SHORT).show();
+            } else {
+                Toast.makeText(this, R.string.pin_incorrect, Toast.LENGTH_SHORT).show();
+            }
+        }, () -> { });
+    }
+
+    private void setupPin(Runnable afterSave) {
+        showPinEntry(getString(R.string.pin_setup_title), first -> {
+            showPinEntry(getString(R.string.pin_confirm_title), second -> {
+                boolean same = LauncherState.samePin(first, second);
+                Arrays.fill(second, '\0');
+                if (!same) {
+                    Arrays.fill(first, '\0');
+                    Toast.makeText(this, R.string.pin_mismatch, Toast.LENGTH_SHORT).show();
+                    return;
+                }
+                boolean saved = launcherState.setPin(first);
+                Arrays.fill(first, '\0');
+                if (!saved) {
+                    Toast.makeText(this, R.string.pin_not_saved, Toast.LENGTH_SHORT).show();
+                    return;
+                }
+                Toast.makeText(this, R.string.pin_saved, Toast.LENGTH_SHORT).show();
+                afterSave.run();
+            }, () -> Arrays.fill(first, '\0'));
+        }, () -> { });
+    }
+
+    private interface PinSubmit { void onPin(char[] pin); }
+
+    /** A numeric keypad built for D-pad/OK; PIN digits are never sent to an IME or written to logs. */
+    private void showPinEntry(String titleText, PinSubmit submit, Runnable onCancel) {
+        Dialog dialog = new Dialog(this);
+        dialog.requestWindowFeature(Window.FEATURE_NO_TITLE);
+        LinearLayout panel = new LinearLayout(this);
+        panel.setOrientation(LinearLayout.VERTICAL);
+        int padding = (int) (22 * density);
+        panel.setPadding(padding, padding, padding, padding);
+        panel.setBackgroundResource(R.drawable.glass_panel);
+
+        TextView title = new TextView(this);
+        title.setText(titleText);
+        title.setTextColor(Color.WHITE);
+        title.setTextSize(22);
+        panel.addView(title, new LinearLayout.LayoutParams(-1, -2));
+        TextView help = new TextView(this);
+        help.setText(R.string.pin_entry_help);
+        help.setTextColor(0xFFB8B8BE);
+        help.setTextSize(14);
+        panel.addView(help, new LinearLayout.LayoutParams(-1, -2));
+        TextView display = new TextView(this);
+        display.setGravity(Gravity.CENTER);
+        display.setTextColor(Color.WHITE);
+        display.setTextSize(28);
+        display.setPadding(0, (int) (10 * density), 0, (int) (10 * density));
+        display.setText(" ");
+        panel.addView(display, new LinearLayout.LayoutParams(-1, -2));
+
+        StringBuilder digits = new StringBuilder(LauncherState.PIN_MAX);
+        Runnable updateDisplay = () -> {
+            StringBuilder bullets = new StringBuilder();
+            for (int i = 0; i < digits.length(); i++) bullets.append("● ");
+            display.setText(bullets.length() == 0 ? " " : bullets.toString().trim());
+        };
+        boolean[] submitted = {false};
+        String[][] keys = {{"1", "2", "3"}, {"4", "5", "6"}, {"7", "8", "9"},
+                {getString(R.string.delete_digit), "0", getString(R.string.confirm)}};
+        TextView firstKey = null;
+        for (String[] keyRow : keys) {
+            LinearLayout row = new LinearLayout(this);
+            row.setGravity(Gravity.CENTER);
+            for (String key : keyRow) {
+                TextView button = pinKey(key, () -> {
+                    if (getString(R.string.confirm).equals(key)) {
+                        char[] pin = new char[digits.length()];
+                        digits.getChars(0, digits.length(), pin, 0);
+                        if (!LauncherState.validPin(pin)) {
+                            Arrays.fill(pin, '\0');
+                            Toast.makeText(this, R.string.pin_error_length, Toast.LENGTH_SHORT).show();
+                            return;
+                        }
+                        submitted[0] = true;
+                        clear(digits);
+                        dialog.dismiss();
+                        submit.onPin(pin);
+                    } else if (getString(R.string.delete_digit).equals(key)) {
+                        if (digits.length() > 0) digits.deleteCharAt(digits.length() - 1);
+                        updateDisplay.run();
+                    } else if (digits.length() < LauncherState.PIN_MAX) {
+                        digits.append(key);
+                        updateDisplay.run();
+                    }
+                });
+                if (firstKey == null) firstKey = button;
+                LinearLayout.LayoutParams keyLp = new LinearLayout.LayoutParams((int) (82 * density), (int) (52 * density));
+                keyLp.setMargins((int) (4 * density), (int) (4 * density), (int) (4 * density), (int) (4 * density));
+                row.addView(button, keyLp);
+            }
+            panel.addView(row, new LinearLayout.LayoutParams(-1, -2));
+        }
+        dialog.setContentView(panel);
+        dialog.setCanceledOnTouchOutside(false);
+        dialog.setOnCancelListener(d -> {
+            clear(digits);
+            if (!submitted[0]) onCancel.run();
+        });
+        Window window = dialog.getWindow();
+        if (window != null) {
+            window.setBackgroundDrawable(new ColorDrawable(Color.TRANSPARENT));
+            window.setDimAmount(0.7f);
+        }
+        dialog.show();
+        if (window != null) window.setLayout((int) (330 * density), ViewGroup.LayoutParams.WRAP_CONTENT);
+        if (firstKey != null) firstKey.requestFocus();
+    }
+
+    private TextView pinKey(String text, Runnable action) {
+        TextView button = new TextView(this);
+        button.setText(text);
+        button.setTextColor(Color.WHITE);
+        button.setTextSize(text.length() > 1 ? 13 : 20);
+        button.setGravity(Gravity.CENTER);
+        button.setBackgroundResource(R.drawable.focus_button_bg);
+        button.setFocusable(true);
+        button.setClickable(true);
+        button.setOnClickListener(v -> action.run());
+        return button;
+    }
+
+    private static void clear(StringBuilder value) {
+        for (int i = 0; i < value.length(); i++) value.setCharAt(i, '\0');
+        value.setLength(0);
+    }
+
+    private void showParentalControl() {
+        if (!parentalStateAvailable()) return;
+        if (!launcherState.isPinConfigured()) {
+            if (!protectedApps.isEmpty()) {
+                Toast.makeText(this, R.string.parental_state_unavailable, Toast.LENGTH_SHORT).show();
+                return;
+            }
+            setupPin(this::showProtectedApps);
+            return;
+        }
+        authenticate(getString(R.string.parental_control), this::showProtectedApps);
+    }
+
+    private void showProtectedApps() {
+        Intent query = new Intent(Intent.ACTION_MAIN).addCategory(Intent.CATEGORY_LEANBACK_LAUNCHER);
+        List<ResolveInfo> found = getPackageManager().queryIntentActivities(query, 0);
+        List<ResolveInfo> apps = new ArrayList<>();
+        Set<String> seen = new HashSet<>();
+        for (ResolveInfo info : found) {
+            if (info.activityInfo == null || info.activityInfo.packageName.equals(getPackageName())) continue;
+            if (seen.add(info.activityInfo.packageName)) apps.add(info);
+        }
+        apps.sort((a, b) -> String.valueOf(a.loadLabel(getPackageManager())).compareToIgnoreCase(
+                String.valueOf(b.loadLabel(getPackageManager()))));
+
+        Set<String> selected = new HashSet<>(protectedApps);
+        Dialog dialog = new Dialog(this);
+        dialog.requestWindowFeature(Window.FEATURE_NO_TITLE);
+        LinearLayout panel = new LinearLayout(this);
+        panel.setOrientation(LinearLayout.VERTICAL);
+        int padding = (int) (20 * density);
+        panel.setPadding(padding, padding, padding, (int) (12 * density));
+        panel.setBackgroundResource(R.drawable.glass_panel);
+        TextView title = new TextView(this);
+        title.setText(R.string.parental_select_apps);
+        title.setTextColor(Color.WHITE);
+        title.setTextSize(22);
+        panel.addView(title, new LinearLayout.LayoutParams(-1, -2));
+        TextView help = new TextView(this);
+        help.setText(R.string.parental_select_help);
+        help.setTextColor(0xFFB8B8BE);
+        help.setTextSize(14);
+        panel.addView(help, new LinearLayout.LayoutParams(-1, -2));
+
+        ScrollView scroll = new ScrollView(this);
+        LinearLayout rows = new LinearLayout(this);
+        rows.setOrientation(LinearLayout.VERTICAL);
+        scroll.addView(rows, new ScrollView.LayoutParams(-1, -2));
+        LinearLayout.LayoutParams scrollLp = new LinearLayout.LayoutParams(-1, 0, 1f);
+        scrollLp.topMargin = (int) (12 * density);
+        panel.addView(scroll, scrollLp);
+        for (ResolveInfo info : apps) {
+            String pkg = info.activityInfo.packageName;
+            String label = Cards.cleanLabel(String.valueOf(info.loadLabel(getPackageManager())), pkg);
+            LinearLayout row = new LinearLayout(this);
+            row.setOrientation(LinearLayout.VERTICAL);
+            row.setPadding((int) (8 * density), (int) (3 * density), (int) (8 * density), (int) (3 * density));
+            CheckBox check = new CheckBox(this);
+            check.setText(label);
+            check.setTextColor(Color.WHITE);
+            check.setTextSize(16);
+            check.setChecked(selected.contains(pkg));
+            check.setFocusable(true);
+            check.setOnCheckedChangeListener((button, checked) -> {
+                if (checked) selected.add(pkg);
+                else selected.remove(pkg);
+            });
+            row.addView(check, new LinearLayout.LayoutParams(-1, -2));
+            TextView status = new TextView(this);
+            String value = hiddenApps.contains(pkg) ? getString(R.string.hidden_from_home) : getString(R.string.in_app_list);
+            status.setText(protectedApps.contains(pkg) ? value + "  ·  " + getString(R.string.protected_by_pin) : value);
+            status.setTextColor(0xFFB8B8BE);
+            status.setTextSize(12);
+            status.setPadding((int) (48 * density), 0, 0, (int) (5 * density));
+            row.addView(status, new LinearLayout.LayoutParams(-1, -2));
+            rows.addView(row, new LinearLayout.LayoutParams(-1, -2));
+        }
+
+        LinearLayout buttons = new LinearLayout(this);
+        buttons.setGravity(Gravity.END | Gravity.CENTER_VERTICAL);
+        buttons.addView(controlButton(R.string.pin_change, () -> {
+            dialog.dismiss();
+            setupPin(() -> { });
+        }), controlButtonLp());
+        buttons.addView(controlButton(R.string.cancel, dialog::dismiss), controlButtonLp());
+        buttons.addView(controlButton(R.string.save, () -> {
+            if (!launcherState.saveProtectedApps(selected)) {
+                Toast.makeText(this, R.string.pin_not_saved, Toast.LENGTH_SHORT).show();
+                return;
+            }
+            protectedApps = new HashSet<>(selected);
+            adapter.setProtectedApps(protectedApps);
+            dialog.dismiss();
+            Toast.makeText(this, R.string.protected_apps_saved, Toast.LENGTH_SHORT).show();
+        }), controlButtonLp());
+        panel.addView(buttons, new LinearLayout.LayoutParams(-1, -2));
+        dialog.setContentView(panel);
+        dialog.setCanceledOnTouchOutside(false);
+        Window window = dialog.getWindow();
+        if (window != null) {
+            window.setBackgroundDrawable(new ColorDrawable(Color.TRANSPARENT));
+            window.setDimAmount(0.65f);
+        }
+        dialog.show();
+        if (window != null) {
+            window.setLayout((int) (getResources().getDisplayMetrics().widthPixels * 0.76f),
+                    (int) (getResources().getDisplayMetrics().heightPixels * 0.82f));
+        }
+        if (rows.getChildCount() > 0) rows.getChildAt(0).requestFocus();
+        else buttons.getChildAt(0).requestFocus();
+    }
+
+    private TextView controlButton(int textRes, Runnable action) {
+        TextView button = new TextView(this);
+        button.setText(textRes);
+        button.setTextColor(Color.WHITE);
+        button.setTextSize(14);
+        button.setGravity(Gravity.CENTER);
+        button.setPadding((int) (12 * density), (int) (8 * density), (int) (12 * density), (int) (8 * density));
+        button.setBackgroundResource(R.drawable.focus_button_bg);
+        button.setFocusable(true);
+        button.setClickable(true);
+        button.setOnClickListener(v -> action.run());
+        return button;
+    }
+
+    private LinearLayout.LayoutParams controlButtonLp() {
+        LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(-2, -2);
+        lp.leftMargin = (int) (6 * density);
+        return lp;
+    }
 
     @Override
     public void onTileFocused(int position, View card) {
@@ -810,22 +1525,75 @@ public class MainActivity extends Activity implements AppAdapter.TileListener {
 
     /** The TV's own source-selection panel, for TVs that have no TvInputManager (TCL Android TV 9). */
     private void openSourcePanel() {
+        if (!parentalStateAvailable()) return;
         Intent i = new Intent(sourcePanelAction);
         ComponentName c = ComponentName.unflattenFromString(sourcePanelService);
         if (c != null) i.setComponent(c);
+        Runnable start = () -> {
+            try {
+                startService(i);
+            } catch (Exception e) {
+                Toast.makeText(this, R.string.not_available, Toast.LENGTH_SHORT).show();
+            }
+        };
+        if (c != null && LauncherState.requiresPin(protectedApps, c.getPackageName())) {
+            authenticate(getString(R.string.pin_unlock_app, appLabel(c.getPackageName())), start);
+        } else start.run();
+    }
+
+    private boolean open(Intent i) {
+        return open(i, true);
+    }
+
+    private boolean open(Intent i, boolean showError) {
+        if (!parentalStateAvailable()) return false;
+        if (i == null) {
+            if (showError) Toast.makeText(this, R.string.not_available, Toast.LENGTH_SHORT).show();
+            return false;
+        }
+        String pkg = targetPackage(i);
+        if (LauncherState.requiresPin(protectedApps, pkg)) {
+            String label = appLabel(pkg);
+            authenticate(getString(R.string.pin_unlock_app, label), () -> performOpen(i, showError));
+            return true;
+        }
+        return performOpen(i, showError);
+    }
+
+    private String targetPackage(Intent i) {
+        if (i.getComponent() != null) return i.getComponent().getPackageName();
+        if (i.getPackage() != null) return i.getPackage();
+        ResolveInfo resolved = getPackageManager().resolveActivity(i, 0);
+        return resolved != null && resolved.activityInfo != null ? resolved.activityInfo.packageName : null;
+    }
+
+    private String appLabel(String pkg) {
         try {
-            startService(i);
-        } catch (Exception e) {
-            Toast.makeText(this, R.string.not_available, Toast.LENGTH_SHORT).show();
+            ApplicationInfo info = getPackageManager().getApplicationInfo(pkg, 0);
+            return String.valueOf(info.loadLabel(getPackageManager()));
+        } catch (Exception ignored) {
+            return pkg;
         }
     }
 
-    private void open(Intent i) {
+    private boolean performOpen(Intent i) {
+        return performOpen(i, true);
+    }
+
+    private boolean parentalStateAvailable() {
+        if (!launcherState.hasStorageError()) return true;
+        Toast.makeText(this, R.string.parental_state_unavailable, Toast.LENGTH_SHORT).show();
+        return false;
+    }
+
+    private boolean performOpen(Intent i, boolean showError) {
         i.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
         try {
             startActivity(i);
+            return true;
         } catch (ActivityNotFoundException e) {
-            Toast.makeText(this, R.string.not_available, Toast.LENGTH_SHORT).show();
+            if (showError) Toast.makeText(this, R.string.not_available, Toast.LENGTH_SHORT).show();
+            return false;
         }
     }
 
@@ -837,8 +1605,7 @@ public class MainActivity extends Activity implements AppAdapter.TileListener {
         Intent view = new Intent(Intent.ACTION_VIEW).setDataAndType(uri, "vnd.android.cursor.item/channel")
                 .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
         try {
-            startActivity(view);
-            return;
+            if (open(view, false)) return;
         } catch (ActivityNotFoundException e) {
             if (inputAction.isEmpty()) {
                 Toast.makeText(this, R.string.not_available, Toast.LENGTH_SHORT).show();
