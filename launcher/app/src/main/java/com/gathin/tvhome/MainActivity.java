@@ -40,6 +40,7 @@ import android.text.SpannableString;
 import android.text.Spanned;
 import android.text.TextPaint;
 import android.text.TextUtils;
+import android.util.Log;
 import android.view.Gravity;
 import android.view.KeyEvent;
 import android.view.View;
@@ -88,6 +89,7 @@ public class MainActivity extends Activity implements AppAdapter.TileListener {
     static final String ACTION_OPEN_SETTINGS = "com.gathin.tvhome.action.OPEN_SETTINGS";
     private static final long MINUTE_MS = 60_000L;
     private static final ZoneId FAMILY_ZONE = ZoneId.of("Europe/Lisbon");
+    private static final String FAMILY_XBOX_TIMING_TAG = "FamilyXboxTiming";
     private String liveTvPkg;
     private String liveTvAction;
     private String inputAction;
@@ -105,6 +107,8 @@ public class MainActivity extends Activity implements AppAdapter.TileListener {
     private boolean familyScreenReceiverRegistered;
     private boolean familyLimitNotified;
     private boolean familyLaunchInFlight;
+    private boolean configuredHomeSettingsShortcut;
+    private long xboxLauncherAttemptStartedMs;
     private List<String> defaultDockOrder = Collections.emptyList();
     private Set<String> configuredHiddenApps = Collections.emptySet();
     private Set<String> protectedApps = Collections.emptySet();
@@ -159,8 +163,7 @@ public class MainActivity extends Activity implements AppAdapter.TileListener {
                     System.currentTimeMillis(), SystemClock.elapsedRealtime(), SystemClock.uptimeMillis());
             handleFamilyUsageUpdate(update);
             if (!on) {
-                activeFamilyProfile = null;
-                updateFamilyStatus();
+                setActiveFamilyProfile(null);
             } else if (familyActivityResumed) {
                 handler.postDelayed(MainActivity.this::maybeShowFamilyProfileSelector, 350L);
             }
@@ -218,8 +221,12 @@ public class MainActivity extends Activity implements AppAdapter.TileListener {
         @Override
         public void onReceive(Context context, Intent intent) {
             // Updates send REMOVED followed by ADDED; keep the tile until the new APK is ready.
-            if (Intent.ACTION_PACKAGE_REMOVED.equals(intent.getAction())
-                    && intent.getBooleanExtra(Intent.EXTRA_REPLACING, false)) return;
+            if (Intent.ACTION_PACKAGE_REMOVED.equals(intent.getAction())) {
+                if (intent.getBooleanExtra(Intent.EXTRA_REPLACING, false)) return;
+                Uri packageUri = intent.getData();
+                String packageName = packageUri == null ? null : packageUri.getSchemeSpecificPart();
+                if (packageName != null && familyStore != null) familyStore.removeChildAppApproval(packageName);
+            }
             reloadApps(false);
         }
     };
@@ -252,6 +259,7 @@ public class MainActivity extends Activity implements AppAdapter.TileListener {
         protectedApps = new HashSet<>(launcherState.protectedApps());
         COLUMNS = cfg.columns;
         reducedMotion = cfg.reducedMotion;
+        configuredHomeSettingsShortcut = cfg.showHomeSettingsShortcut;
         liveTvPkg = cfg.liveTvPackage;
         liveTvAction = cfg.liveTvAction;
         inputAction = cfg.inputAction;
@@ -527,11 +535,69 @@ public class MainActivity extends Activity implements AppAdapter.TileListener {
         final String returnKey = lastFocusedKey;
         final int returnSlot = lastFocused;
         final List<Cards.Card> none = Collections.emptyList();
-        cards = moduleCards ? CardFeature.run(() -> Cards.discover(this, hiddenApps, Cards.load(Cards.storeFile(this))), none) : none;
-        adapter.setHiddenApps(hiddenApps);
+        Set<String> profileHidden = profileHiddenApps();
+        cards = moduleCards ? CardFeature.run(() -> Cards.discover(this, profileHidden, Cards.load(Cards.storeFile(this))), none) : none;
+        adapter.setHiddenApps(profileHidden);
+        adapter.setHomeSettingsVisible(configuredHomeSettingsShortcut && !childScopedLauncher());
         adapter.reload(cards.isEmpty() ? none : CardFeature.run(() -> Cards.shown(cards), none));
         lastFocusedKey = returnKey;
         lastFocused = returnSlot;
+    }
+
+    private boolean childScopedLauncher() {
+        return familyEnabled() && activeFamilyProfile != FamilyTimePolicy.Profile.ADULT;
+    }
+
+    private boolean blockNonAdultAppManagement() {
+        if (!familyEnabled() || activeFamilyProfile == FamilyTimePolicy.Profile.ADULT) return false;
+        Toast.makeText(this, R.string.family_admin_adult_required, Toast.LENGTH_LONG).show();
+        return true;
+    }
+
+    private Set<String> launchablePackages() {
+        return new HashSet<>(launchableInstallTimes().keySet());
+    }
+
+    private java.util.Map<String, Long> launchableInstallTimes() {
+        Intent probe = new Intent(Intent.ACTION_MAIN).addCategory(Intent.CATEGORY_LEANBACK_LAUNCHER);
+        List<ResolveInfo> found = getPackageManager().queryIntentActivities(probe, 0);
+        java.util.Map<String, Long> packages = new java.util.HashMap<>();
+        for (ResolveInfo info : found) {
+            if (info.activityInfo == null) continue;
+            String pkg = info.activityInfo.packageName;
+            if (getPackageName().equals(pkg) || packages.containsKey(pkg)) continue;
+            long installTime = packageFirstInstallTime(pkg);
+            if (installTime >= 0L) packages.put(pkg, installTime);
+        }
+        return packages;
+    }
+
+    private long packageFirstInstallTime(String packageName) {
+        try {
+            return getPackageManager().getPackageInfo(packageName, 0).firstInstallTime;
+        } catch (Exception unavailable) {
+            return -1L;
+        }
+    }
+
+    private boolean initializeChildAppsIfNeeded() {
+        if (familyStore.childAppsInitialized()) return true;
+        if (familyStore.hasStorageError()) return false;
+        java.util.Map<String, Long> initiallyVisible = launchableInstallTimes();
+        for (String pkg : hiddenApps) initiallyVisible.remove(pkg);
+        return familyStore.initializeChildApps(initiallyVisible);
+    }
+
+    private Set<String> profileHiddenApps() {
+        if (!childScopedLauncher()) return new HashSet<>(hiddenApps);
+        java.util.Map<String, Long> installTimes = launchableInstallTimes();
+        Set<String> allowed = new HashSet<>();
+        if (familyStore != null) {
+            for (java.util.Map.Entry<String, Long> entry : installTimes.entrySet()) {
+                if (familyStore.isChildAppAllowed(entry.getKey(), entry.getValue())) allowed.add(entry.getKey());
+            }
+        }
+        return FamilyAppVisibilityPolicy.hiddenPackages(activeFamilyProfile, installTimes.keySet(), allowed);
     }
 
     /**
@@ -553,6 +619,11 @@ public class MainActivity extends Activity implements AppAdapter.TileListener {
     @Override
     protected void onPause() {
         super.onPause();
+        if (xboxLauncherAttemptStartedMs > 0L) {
+            Log.i(FAMILY_XBOX_TIMING_TAG, "launcher_to_activity_pause_ms="
+                    + (SystemClock.elapsedRealtime() - xboxLauncherAttemptStartedMs));
+            xboxLauncherAttemptStartedMs = 0L;
+        }
         familyActivityResumed = false;
         unregisterReceiver(packageReceiver);
         handler.removeCallbacks(minuteTick);
@@ -600,6 +671,7 @@ public class MainActivity extends Activity implements AppAdapter.TileListener {
 
     @Override
     public void onTileManage(AppAdapter.Entry entry) {
+        if (blockNonAdultAppManagement()) return;
         showAppContextMenu(entry.pkg, entry.label, false);
     }
 
@@ -612,8 +684,7 @@ public class MainActivity extends Activity implements AppAdapter.TileListener {
                 .addCategory(Intent.CATEGORY_LEANBACK_LAUNCHER)
                 .setComponent(entry.component)
                 .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_ACTIVITY_RESET_TASK_IF_NEEDED);
-        if (!familyAllowsIntent(intent)) return;
-        requirePin(entry.pkg, entry.label, false, () -> performOpen(intent));
+        open(intent);
     }
 
     void openFromLibrary(String pkg, ComponentName component, String label) {
@@ -621,6 +692,7 @@ public class MainActivity extends Activity implements AppAdapter.TileListener {
     }
 
     boolean onDockOrderChanged(List<String> order) {
+        if (blockNonAdultAppManagement()) return false;
         if (!launcherState.saveDockOrder(order)) {
             Toast.makeText(this, R.string.settings_not_saved, Toast.LENGTH_SHORT).show();
             return false;
@@ -637,6 +709,7 @@ public class MainActivity extends Activity implements AppAdapter.TileListener {
     }
 
     private void showAppContextMenu(String pkg, String label, boolean inLibrary) {
+        if (blockNonAdultAppManagement()) return;
         Runnable showMenu = () -> showAppContextMenuDialog(pkg, label, inLibrary);
         if (LauncherState.requiresPin(protectedApps, pkg)) requirePin(pkg, label, true, showMenu);
         else showMenu.run();
@@ -712,6 +785,7 @@ public class MainActivity extends Activity implements AppAdapter.TileListener {
 
     private void runAppAction(AppActionPolicy.Action action, String pkg, String label,
                               boolean alreadyAuthenticated) {
+        if (blockNonAdultAppManagement()) return;
         switch (action) {
             case MOVE:
                 moveAppToDockAndShowControls(pkg);
@@ -743,6 +817,7 @@ public class MainActivity extends Activity implements AppAdapter.TileListener {
     }
 
     private void setAppVisibility(String pkg, boolean visible) {
+        if (blockNonAdultAppManagement()) return;
         if (!launcherState.setAppHidden(pkg, !visible, configuredHiddenApps)) {
             Toast.makeText(this, R.string.settings_not_saved, Toast.LENGTH_SHORT).show();
             return;
@@ -754,6 +829,7 @@ public class MainActivity extends Activity implements AppAdapter.TileListener {
     }
 
     private void setHomeShortcut(String pkg, boolean add) {
+        if (blockNonAdultAppManagement()) return;
         List<String> order = new ArrayList<>(launcherState.dockOrder(defaultDockOrder));
         if (add) {
             if (order.contains(pkg)) return;
@@ -773,6 +849,7 @@ public class MainActivity extends Activity implements AppAdapter.TileListener {
     }
 
     private void moveAppToDockAndShowControls(String pkg) {
+        if (blockNonAdultAppManagement()) return;
         List<String> order = new ArrayList<>(launcherState.dockOrder(defaultDockOrder));
         if (!order.contains(pkg)) {
             if (activeDockCount(order) >= COLUMNS) {
@@ -910,7 +987,8 @@ public class MainActivity extends Activity implements AppAdapter.TileListener {
         LinearLayout.LayoutParams helpLp = new LinearLayout.LayoutParams(-1, -2);
         helpLp.topMargin = (int) (3 * density);
         panel.addView(help, helpLp);
-        addToolOption(panel, R.string.organize_apps, () -> {
+        boolean restricted = childScopedLauncher();
+        if (!restricted) addToolOption(panel, R.string.organize_apps, () -> {
             dialog.dismiss();
             showAppLibrary(true);
         });
@@ -918,23 +996,25 @@ public class MainActivity extends Activity implements AppAdapter.TileListener {
             dialog.dismiss();
             showAppLibrary(false);
         });
-        addToolOption(panel, R.string.parental_control, () -> {
-            dialog.dismiss();
-            showParentalControl();
-        });
-        addToolOption(panel, R.string.family_profiles, () -> {
-            dialog.dismiss();
-            if (familyStore != null && familyStore.isEnabled()) showFamilyProfileSelector();
-            else showFamilyManagement();
-        });
-        addToolOption(panel, R.string.family_management, () -> {
-            dialog.dismiss();
-            showFamilyManagement();
-        });
-        if (moduleCards) addToolOption(panel, R.string.module_cards, () -> {
-            dialog.dismiss();
-            showModuleCards();
-        });
+        if (!restricted) {
+            addToolOption(panel, R.string.parental_control, () -> {
+                dialog.dismiss();
+                showParentalControl();
+            });
+            addToolOption(panel, R.string.family_profiles, () -> {
+                dialog.dismiss();
+                if (familyStore != null && familyStore.isEnabled()) showFamilyProfileSelector();
+                else showFamilyManagement();
+            });
+            addToolOption(panel, R.string.family_management, () -> {
+                dialog.dismiss();
+                showFamilyManagement();
+            });
+            if (moduleCards) addToolOption(panel, R.string.module_cards, () -> {
+                dialog.dismiss();
+                showModuleCards();
+            });
+        }
         addToolOption(panel, R.string.close, dialog::dismiss);
         dialog.setContentView(panel);
         dialog.setCanceledOnTouchOutside(false);
@@ -965,7 +1045,10 @@ public class MainActivity extends Activity implements AppAdapter.TileListener {
     }
 
     private void showAppLibrary(boolean orderOnly) {
-        AppLibraryDialog.show(this, orderOnly, launcherState.dockOrder(defaultDockOrder), hiddenApps, protectedApps);
+        boolean restricted = childScopedLauncher();
+        AppLibraryDialog.show(this, restricted ? false : orderOnly,
+                launcherState.dockOrder(defaultDockOrder),
+                restricted ? profileHiddenApps() : hiddenApps, protectedApps, restricted);
     }
 
     private void requirePin(String pkg, String label, boolean management, Runnable allowed) {
@@ -1339,6 +1422,7 @@ public class MainActivity extends Activity implements AppAdapter.TileListener {
     }
 
     private void showParentalControl() {
+        if (blockNonAdultAppManagement()) return;
         if (!parentalStateAvailable()) return;
         if (!launcherState.hasParentalCredential() && launcherState.hasStorageError()) {
             Toast.makeText(this, R.string.parental_state_unavailable, Toast.LENGTH_SHORT).show();
@@ -1808,19 +1892,23 @@ public class MainActivity extends Activity implements AppAdapter.TileListener {
     }
 
     private boolean open(Intent i, boolean showError) {
+        return open(i, showError, false);
+    }
+
+    private boolean open(Intent i, boolean showError, boolean familyAuthorizationChecked) {
         if (!parentalStateAvailable()) return false;
         if (i == null) {
             if (showError) Toast.makeText(this, R.string.not_available, Toast.LENGTH_SHORT).show();
             return false;
         }
-        if (!familyAllowsIntent(i)) return false;
+        if (!familyAuthorizationChecked && !familyAllowsIntent(i)) return false;
         String pkg = targetPackage(i);
         if (LauncherState.requiresPin(protectedApps, pkg)) {
             String label = appLabel(pkg);
-        authenticate(getString(R.string.sequence_unlock_app, label), () -> performOpen(i, showError));
+            authenticate(getString(R.string.sequence_unlock_app, label), () -> performOpen(i, showError));
             return true;
         }
-        return performOpen(i, showError);
+        return dispatchAuthorizedOpen(i, showError);
     }
 
     private String targetPackage(Intent i) {
@@ -1859,6 +1947,17 @@ public class MainActivity extends Activity implements AppAdapter.TileListener {
 
     private boolean familyEnabled() {
         return familyStore != null && familyStore.isEnabled();
+    }
+
+    private void setActiveFamilyProfile(FamilyTimePolicy.Profile profile) {
+        setActiveFamilyProfile(profile, true);
+    }
+
+    private void setActiveFamilyProfile(FamilyTimePolicy.Profile profile, boolean refreshApps) {
+        if (activeFamilyProfile == profile) return;
+        activeFamilyProfile = profile;
+        updateFamilyStatus();
+        if (refreshApps && adapter != null) reloadApps(false);
     }
 
     private void startFamilySessionMonitor() {
@@ -1926,6 +2025,19 @@ public class MainActivity extends Activity implements AppAdapter.TileListener {
             if (resolved != null && resolved.activityInfo != null) pkg = resolved.activityInfo.packageName;
         }
         if (isSettingsPackage(pkg)) return familyAllowsTarget(FamilyAccessPolicy.Target.SYSTEM_SETTINGS, null);
+        long firstInstallTime = activeFamilyProfile == FamilyTimePolicy.Profile.CHILD_TV
+                && pkg != null ? packageFirstInstallTime(pkg) : -1L;
+        boolean childApprovalMatchesInstall = pkg != null && firstInstallTime >= 0L
+                && familyStore.isChildAppAllowed(pkg, firstInstallTime);
+        if (activeFamilyProfile == FamilyTimePolicy.Profile.CHILD_TV
+                && !FamilyAppVisibilityPolicy.mayLaunch(activeFamilyProfile, pkg, childApprovalMatchesInstall)) {
+            if (familyStore.hasStorageError()) {
+                Toast.makeText(this, R.string.family_storage_error, Toast.LENGTH_LONG).show();
+            } else {
+                Toast.makeText(this, R.string.family_child_app_blocked, Toast.LENGTH_LONG).show();
+            }
+            return false;
+        }
         return familyAllowsTarget(pkg == null ? FamilyAccessPolicy.Target.UNKNOWN : FamilyAccessPolicy.Target.APP, null);
     }
 
@@ -1972,8 +2084,7 @@ public class MainActivity extends Activity implements AppAdapter.TileListener {
         if (decision.reason == FamilyAccessPolicy.Reason.OUTSIDE_HOURS
                 || decision.reason == FamilyAccessPolicy.Reason.DAILY_LIMIT_REACHED
                 || decision.reason == FamilyAccessPolicy.Reason.CLOCK_UNCERTAIN) {
-            activeFamilyProfile = null;
-            updateFamilyStatus();
+            setActiveFamilyProfile(null);
         }
         return false;
     }
@@ -2055,7 +2166,7 @@ public class MainActivity extends Activity implements AppAdapter.TileListener {
             trackedFamilyProfile = null;
             stopService(new Intent(this, FamilySessionMonitorService.class));
         }
-        if (familyLaunchInFlight && familyEnabled()) activeFamilyProfile = null;
+        if (familyLaunchInFlight && familyEnabled()) setActiveFamilyProfile(null);
         familyLaunchInFlight = false;
         updateFamilyStatus();
     }
@@ -2086,9 +2197,9 @@ public class MainActivity extends Activity implements AppAdapter.TileListener {
                 Toast.makeText(this, message, Toast.LENGTH_LONG).show();
                 familyLimitNotified = true;
             }
-            activeFamilyProfile = null;
+            setActiveFamilyProfile(null);
         }
-        updateFamilyStatus();
+        else updateFamilyStatus();
         refreshFamilyProfileAccess(true);
     }
 
@@ -2098,8 +2209,7 @@ public class MainActivity extends Activity implements AppAdapter.TileListener {
         LocalDate day = now.toLocalDate();
         familyStore.observeClock(now.toInstant().toEpochMilli(), SystemClock.elapsedRealtime(), day);
         if (familyStore.hasStorageError()) {
-            activeFamilyProfile = null;
-            updateFamilyStatus();
+            setActiveFamilyProfile(null);
             if (notify) Toast.makeText(this, R.string.family_storage_error, Toast.LENGTH_LONG).show();
             return;
         }
@@ -2111,8 +2221,7 @@ public class MainActivity extends Activity implements AppAdapter.TileListener {
                 xbox ? snapshot.xboxUsedMs : snapshot.childUsedMs,
                 xbox ? snapshot.xboxExtensionMs : snapshot.childExtensionMs, snapshot.clockUncertain);
         if (!decision.allowed) {
-            activeFamilyProfile = null;
-            updateFamilyStatus();
+            setActiveFamilyProfile(null);
             if (notify) showFamilyDecision(decision.reason);
             if (familyActivityResumed) handler.postDelayed(this::maybeShowFamilyProfileSelector, 250L);
         }
@@ -2196,6 +2305,13 @@ public class MainActivity extends Activity implements AppAdapter.TileListener {
             return;
         }
         familySelectorShowing = true;
+        boolean childAppsWereInitialized = familyStore.childAppsInitialized();
+        if (!initializeChildAppsIfNeeded()) {
+            familySelectorShowing = false;
+            Toast.makeText(this, R.string.family_storage_error, Toast.LENGTH_LONG).show();
+            return;
+        }
+        if (!childAppsWereInitialized && adapter != null) reloadApps(false);
         LocalDate today = familyToday();
         ZonedDateTime currentTime = familyNow();
         familyStore.observeClock(currentTime.toInstant().toEpochMilli(), SystemClock.elapsedRealtime(), today);
@@ -2513,11 +2629,28 @@ public class MainActivity extends Activity implements AppAdapter.TileListener {
                 stopService(new Intent(this, FamilySessionMonitorService.class));
             }
             familyStore.clearReturnHomeOnWake();
-            activeFamilyProfile = profile;
-            updateFamilyStatus();
+            setActiveFamilyProfile(profile);
             return;
         }
         LocalDate today = familyToday();
+        if (profile == FamilyTimePolicy.Profile.XBOX) {
+            FamilyProfileStore.Snapshot xboxSnapshot = familyStore.snapshot(today);
+            if (familyStore.hasStorageError()) {
+                Toast.makeText(this, R.string.family_storage_error, Toast.LENGTH_LONG).show();
+                return;
+            }
+            if (!isConfiguredXboxInput(xboxSnapshot.xboxInputId)) {
+                showFamilyDecision(FamilyAccessPolicy.Reason.WRONG_XBOX_INPUT);
+                handler.postDelayed(this::maybeShowFamilyProfileSelector, 250L);
+                return;
+            }
+            // openInput performs the authoritative time, monitor, and single-session validation.
+            setActiveFamilyProfile(profile, false);
+            if (!openInput(xboxSnapshot.xboxInputId) && activeFamilyProfile == profile) {
+                setActiveFamilyProfile(null);
+            }
+            return;
+        }
         ZonedDateTime currentTime = familyNow();
         familyStore.observeClock(currentTime.toInstant().toEpochMilli(), SystemClock.elapsedRealtime(), today);
         if (familyStore.hasStorageError()) {
@@ -2526,14 +2659,12 @@ public class MainActivity extends Activity implements AppAdapter.TileListener {
         }
         FamilyProfileStore.Snapshot snapshot = familyStore.snapshot(today);
         FamilyAccessPolicy.Decision decision = profileChoiceDecision(profile, snapshot, today);
-        if (!decision.allowed || (profile == FamilyTimePolicy.Profile.XBOX && !isConfiguredXboxInput(snapshot.xboxInputId))) {
-            showFamilyDecision(decision.reason == FamilyAccessPolicy.Reason.ALLOWED
-                    ? FamilyAccessPolicy.Reason.WRONG_XBOX_INPUT : decision.reason);
+        if (!decision.allowed) {
+            showFamilyDecision(decision.reason);
             updateFamilyStatus();
             return;
         }
-        activeFamilyProfile = profile;
-        updateFamilyStatus();
+        setActiveFamilyProfile(profile);
     }
 
     private LinearLayout familyPanel() {
@@ -2608,6 +2739,11 @@ public class MainActivity extends Activity implements AppAdapter.TileListener {
 
     private void showFamilyManagement() {
         if (!parentalStateAvailable()) return;
+        if (familyEnabled() && activeFamilyProfile != null
+                && activeFamilyProfile != FamilyTimePolicy.Profile.ADULT) {
+            Toast.makeText(this, R.string.family_admin_adult_required, Toast.LENGTH_LONG).show();
+            return;
+        }
         familyStore.isEnabled();
         if (!launcherState.hasParentalCredential() || launcherState.hasStorageError()) {
             Toast.makeText(this, R.string.family_sequence_required, Toast.LENGTH_LONG).show();
@@ -2639,10 +2775,9 @@ public class MainActivity extends Activity implements AppAdapter.TileListener {
                 return;
             }
             stopService(new Intent(this, FamilySessionMonitorService.class));
-            activeFamilyProfile = null;
+            setActiveFamilyProfile(null);
             dialog.dismiss();
             Toast.makeText(this, R.string.family_storage_recovered, Toast.LENGTH_LONG).show();
-            updateFamilyStatus();
         });
         panel.addView(recover, familyChoiceLp());
         TextView cancel = familyChoice(getString(R.string.cancel), true, dialog::dismiss);
@@ -2655,6 +2790,10 @@ public class MainActivity extends Activity implements AppAdapter.TileListener {
     }
 
     private void showFamilyManagementPanel() {
+        if (!initializeChildAppsIfNeeded()) {
+            Toast.makeText(this, R.string.family_storage_error, Toast.LENGTH_LONG).show();
+            return;
+        }
         LocalDate today = familyToday();
         ZonedDateTime now = familyNow();
         familyStore.observeClock(now.toInstant().toEpochMilli(), SystemClock.elapsedRealtime(), today);
@@ -2697,6 +2836,10 @@ public class MainActivity extends Activity implements AppAdapter.TileListener {
                 usageAccess ? 0xFFB8C3D1 : 0xFFFFD180), familyChoiceLp());
         addFamilyManagementAction(content, R.string.family_usage_access_open, this::openFamilyUsageAccessSettings);
         addFamilyManagementAction(content, R.string.sequence_change, this::changeUnlockSequence);
+        addFamilyManagementAction(content, R.string.family_child_apps_action, () -> {
+            dialog.dismiss();
+            showFamilyChildApps();
+        });
 
         content.addView(familyText(R.string.family_time_bar_section, 18, Color.WHITE), familyChoiceLp());
         TextView overlayHelp = familyText(R.string.family_time_bar_help, 14, 0xFFD8DDE5);
@@ -2795,7 +2938,9 @@ public class MainActivity extends Activity implements AppAdapter.TileListener {
                     if (snapshot.enabled) {
                         finishFamilyUsageSession();
                         stopService(new Intent(this, FamilySessionMonitorService.class));
-                        activeFamilyProfile = null;
+                        setActiveFamilyProfile(null);
+                    } else {
+                        reloadTiles();
                     }
                     dialog.dismiss();
                     updateFamilyStatus();
@@ -2815,13 +2960,13 @@ public class MainActivity extends Activity implements AppAdapter.TileListener {
             ZonedDateTime confirmedNow = familyNow();
             if (familyStore.confirmClock(confirmedNow.toInstant().toEpochMilli(), SystemClock.elapsedRealtime(), confirmedNow.toLocalDate())) {
                 dialog.dismiss();
-                activeFamilyProfile = null;
-                updateFamilyStatus();
+                setActiveFamilyProfile(null);
                 showFamilyManagementPanel();
             } else Toast.makeText(this, R.string.family_storage_error, Toast.LENGTH_LONG).show();
         });
         addFamilyManagementAction(content, R.string.close, () -> {
             dialog.dismiss();
+            if (familyEnabled() && activeFamilyProfile == null && adapter != null) reloadApps(false);
             maybeShowFamilyProfileSelector();
         });
 
@@ -2836,6 +2981,138 @@ public class MainActivity extends Activity implements AppAdapter.TileListener {
                 break;
             }
         }
+    }
+
+    private void showFamilyChildApps() {
+        if (familyEnabled() && activeFamilyProfile != null
+                && activeFamilyProfile != FamilyTimePolicy.Profile.ADULT) {
+            Toast.makeText(this, R.string.family_admin_adult_required, Toast.LENGTH_LONG).show();
+            return;
+        }
+        if (!initializeChildAppsIfNeeded()) {
+            Toast.makeText(this, R.string.family_storage_error, Toast.LENGTH_LONG).show();
+            return;
+        }
+        Intent query = new Intent(Intent.ACTION_MAIN).addCategory(Intent.CATEGORY_LEANBACK_LAUNCHER);
+        List<ResolveInfo> found = getPackageManager().queryIntentActivities(query, 0);
+        java.util.Map<String, ResolveInfo> unique = new java.util.HashMap<>();
+        for (ResolveInfo info : found) {
+            if (info.activityInfo == null || getPackageName().equals(info.activityInfo.packageName)) continue;
+            unique.putIfAbsent(info.activityInfo.packageName, info);
+        }
+        List<ResolveInfo> applications = new ArrayList<>(unique.values());
+        Collections.sort(applications, (a, b) -> String.valueOf(a.loadLabel(getPackageManager()))
+                .compareToIgnoreCase(String.valueOf(b.loadLabel(getPackageManager()))));
+
+        Dialog dialog = new Dialog(this);
+        dialog.requestWindowFeature(Window.FEATURE_NO_TITLE);
+        LinearLayout panel = familyPanel();
+        panel.addView(familyText(R.string.family_child_apps_title, 22, Color.WHITE),
+                new LinearLayout.LayoutParams(-1, -2));
+        TextView help = familyText(R.string.family_child_apps_help, 14, 0xFFD8DDE5);
+        LinearLayout.LayoutParams helpLp = familyChoiceLp();
+        helpLp.topMargin = dp(4);
+        panel.addView(help, helpLp);
+
+        ScrollView scroll = new ScrollView(this);
+        LinearLayout rows = new LinearLayout(this);
+        rows.setOrientation(LinearLayout.VERTICAL);
+        scroll.addView(rows, new ScrollView.LayoutParams(-1, -2));
+        LinearLayout.LayoutParams scrollLp = new LinearLayout.LayoutParams(-1, 0, 1f);
+        scrollLp.topMargin = dp(10);
+        scrollLp.bottomMargin = dp(8);
+        panel.addView(scroll, scrollLp);
+        TextView saved = familyText("", 13, 0xFF9FE2BE);
+
+        if (applications.isEmpty()) {
+            TextView empty = familyText(R.string.no_apps_found, 16, 0xFFD8DDE5);
+            empty.setFocusable(true);
+            rows.addView(empty, familyChoiceLp());
+        }
+        for (ResolveInfo info : applications) {
+            String pkg = info.activityInfo.packageName;
+            String label = Cards.cleanLabel(String.valueOf(info.loadLabel(getPackageManager())), pkg);
+            long approvedInstallTime = packageFirstInstallTime(pkg);
+            boolean[] visible = { approvedInstallTime >= 0L
+                    && familyStore.isChildAppAllowed(pkg, approvedInstallTime) };
+            LinearLayout row = new LinearLayout(this);
+            row.setOrientation(LinearLayout.HORIZONTAL);
+            row.setGravity(Gravity.CENTER_VERTICAL);
+            row.setPadding(dp(12), dp(8), dp(12), dp(8));
+            row.setBackgroundResource(R.drawable.focus_row_bg);
+            row.setFocusable(true);
+            row.setClickable(true);
+
+            ImageView icon = new ImageView(this);
+            icon.setImageDrawable(info.loadIcon(getPackageManager()));
+            icon.setScaleType(ImageView.ScaleType.FIT_CENTER);
+            LinearLayout.LayoutParams iconLp = new LinearLayout.LayoutParams(dp(38), dp(38));
+            iconLp.setMarginEnd(dp(12));
+            row.addView(icon, iconLp);
+
+            LinearLayout labels = new LinearLayout(this);
+            labels.setOrientation(LinearLayout.VERTICAL);
+            TextView name = familyText(label, 17, Color.WHITE);
+            name.setSingleLine(true);
+            name.setEllipsize(TextUtils.TruncateAt.END);
+            labels.addView(name, new LinearLayout.LayoutParams(-1, -2));
+            TextView state = familyText("", 13, 0xFFB8C3D1);
+            LinearLayout.LayoutParams stateLp = new LinearLayout.LayoutParams(-1, -2);
+            stateLp.topMargin = dp(2);
+            labels.addView(state, stateLp);
+            row.addView(labels, new LinearLayout.LayoutParams(0, -2, 1f));
+
+            TextView marker = familyText("", 18, 0xFF9FE2BE);
+            marker.setGravity(Gravity.CENTER);
+            row.addView(marker, new LinearLayout.LayoutParams(dp(48), -2));
+            Runnable updateState = () -> {
+                int text = visible[0] ? R.string.family_child_app_visible : R.string.family_child_app_hidden;
+                state.setText(text);
+                marker.setText(visible[0] ? "✓" : "—");
+                row.setContentDescription(getString(R.string.family_profile_accessibility,
+                        label, getString(text)));
+            };
+            updateState.run();
+            row.setOnClickListener(view -> {
+                try {
+                    getPackageManager().getActivityInfo(
+                            new ComponentName(pkg, info.activityInfo.name), 0);
+                } catch (Exception removed) {
+                    Toast.makeText(this, R.string.family_child_app_unavailable, Toast.LENGTH_SHORT).show();
+                    return;
+                }
+                long currentInstallTime = packageFirstInstallTime(pkg);
+                if (currentInstallTime < 0L) {
+                    Toast.makeText(this, R.string.family_child_app_unavailable, Toast.LENGTH_SHORT).show();
+                    return;
+                }
+                boolean next = !visible[0];
+                if (!familyStore.setChildAppAllowed(pkg, currentInstallTime, next)) {
+                    Toast.makeText(this, R.string.family_storage_error, Toast.LENGTH_LONG).show();
+                    return;
+                }
+                visible[0] = next;
+                updateState.run();
+                saved.setText(R.string.family_child_app_saved);
+            });
+            LinearLayout.LayoutParams rowLp = familyChoiceLp();
+            rowLp.bottomMargin = dp(4);
+            rows.addView(row, rowLp);
+        }
+        panel.addView(saved, familyChoiceLp());
+        TextView close = familyChoice(getString(R.string.close), true, () -> {
+            dialog.dismiss();
+            showFamilyManagementPanel();
+        });
+        panel.addView(close, familyChoiceLp());
+        dialog.setContentView(panel);
+        dialog.setCanceledOnTouchOutside(false);
+        dialog.setOnCancelListener(ignored -> showFamilyManagementPanel());
+        configureFamilyDialog(dialog, 0.74f);
+        dialog.show();
+        sizeFamilyDialog(dialog, 0.84f);
+        if (rows.getChildCount() > 0) rows.getChildAt(0).requestFocus();
+        else close.requestFocus();
     }
 
     private void addFamilyManagementAction(LinearLayout content, int label, Runnable action) {
@@ -2941,15 +3218,36 @@ public class MainActivity extends Activity implements AppAdapter.TileListener {
 
     private boolean performOpen(Intent i, boolean showError) {
         if (!familyAllowsIntent(i)) return false;
+        return dispatchAuthorizedOpen(i, showError);
+    }
+
+    private boolean dispatchAuthorizedOpen(Intent i, boolean showError) {
         boolean familySession = familyEnabled();
         boolean tracking = familySession && beginFamilyUsageSession(i);
         if (familySession && !tracking) return false;
         i.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+        boolean xboxInput = familyEnabled() && activeFamilyProfile == FamilyTimePolicy.Profile.XBOX
+                && passthroughInputId(i.getData()) != null;
+        long dispatchStarted = SystemClock.elapsedRealtime();
+        if (xboxInput) xboxLauncherAttemptStartedMs = dispatchStarted;
         try {
             startActivity(i);
             familyLaunchInFlight = familyEnabled();
+            if (xboxInput) {
+                Log.i(FAMILY_XBOX_TIMING_TAG, "launcher_dispatch_ms="
+                        + (SystemClock.elapsedRealtime() - dispatchStarted) + " accepted=true");
+                long attempt = dispatchStarted;
+                handler.postDelayed(() -> {
+                    if (xboxLauncherAttemptStartedMs == attempt) xboxLauncherAttemptStartedMs = 0L;
+                }, 15_000L);
+            }
             return true;
         } catch (ActivityNotFoundException | SecurityException e) {
+            if (xboxInput) {
+                xboxLauncherAttemptStartedMs = 0L;
+                Log.i(FAMILY_XBOX_TIMING_TAG, "launcher_dispatch_ms="
+                        + (SystemClock.elapsedRealtime() - dispatchStarted) + " accepted=false");
+            }
             if (tracking) abortFamilyUsageSession();
             if (showError) Toast.makeText(this, R.string.not_available, Toast.LENGTH_SHORT).show();
             return false;
@@ -2959,20 +3257,34 @@ public class MainActivity extends Activity implements AppAdapter.TileListener {
     /** Switches to a passthrough input (HDMI, AV). The standard way is ACTION_VIEW on its channel URI,
      *  which the Live TV app handles; where nothing takes that, the configured `input_action` is sent
      *  with the same URI instead (XGIMI's HDMI player only answers com.xgimi.action.hdmiPlayer). */
-    private void openInput(String inputId) {
-        if (familyEnabled() && !familyAllowsTarget(FamilyAccessPolicy.Target.PASSTHROUGH_INPUT, inputId)) return;
+    private boolean openInput(String inputId) {
+        boolean xbox = familyEnabled() && activeFamilyProfile == FamilyTimePolicy.Profile.XBOX;
+        long launcherStarted = SystemClock.elapsedRealtime();
+        if (inputId == null || inputId.isEmpty()) return logXboxLauncherPath(launcherStarted, xbox, false);
+        boolean familyAuthorizationChecked = familyEnabled();
+        if (familyAuthorizationChecked
+                && !familyAllowsTarget(FamilyAccessPolicy.Target.PASSTHROUGH_INPUT, inputId)) {
+            return logXboxLauncherPath(launcherStarted, xbox, false);
+        }
         Uri uri = TvContract.buildChannelUriForPassthroughInput(inputId);
         Intent view = new Intent(Intent.ACTION_VIEW).setDataAndType(uri, "vnd.android.cursor.item/channel")
                 .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
-        try {
-            if (open(view, false)) return;
-        } catch (ActivityNotFoundException e) {
-            if (inputAction.isEmpty()) {
-                Toast.makeText(this, R.string.not_available, Toast.LENGTH_SHORT).show();
-                return;
-            }
+        if (open(view, false, familyAuthorizationChecked)) return logXboxLauncherPath(launcherStarted, xbox, true);
+        if (inputAction.isEmpty()) {
+            Toast.makeText(this, R.string.not_available, Toast.LENGTH_SHORT).show();
+            return logXboxLauncherPath(launcherStarted, xbox, false);
         }
-        open(new Intent(inputAction).setDataAndType(uri, "vnd.android.cursor.item/channel"));
+        boolean opened = open(new Intent(inputAction).setDataAndType(uri, "vnd.android.cursor.item/channel"),
+                false, familyAuthorizationChecked);
+        return logXboxLauncherPath(launcherStarted, xbox, opened);
+    }
+
+    private boolean logXboxLauncherPath(long started, boolean xbox, boolean accepted) {
+        if (xbox) {
+            Log.i(FAMILY_XBOX_TIMING_TAG, "launcher_path_ms="
+                    + (SystemClock.elapsedRealtime() - started) + " request_accepted=" + accepted);
+        }
+        return accepted;
     }
 
     /** Dropdown menu under the Inputs pill: HDMI ports (with connection state), AV and Live TV. */
@@ -3223,6 +3535,7 @@ public class MainActivity extends Activity implements AppAdapter.TileListener {
 
     /** Dropdown under the Settings pill (hold OK): every discovered card, its package and key; OK toggles Shown and Hidden. */
     private void showModuleCards() {
+        if (blockNonAdultAppManagement()) return;
         if (cards.isEmpty() || !CardFeature.working()) {
             Toast.makeText(this, R.string.no_module_cards, Toast.LENGTH_SHORT).show();
             return;

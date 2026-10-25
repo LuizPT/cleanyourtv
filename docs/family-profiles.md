@@ -1,6 +1,6 @@
 # CleanYourTV — Edição Família
 
-Edição experimental 2.6 no ramo `feature/family-profiles`, derivada da CleanYourTV Custom Edition 2.4. Esta versão usa `versionCode` 7 para permitir atualização da instalação experimental anterior. Está a ser preparada para Android TV 9 e não substitui nem altera o ramo estável `custom-2.4`.
+Edição experimental 2.7 no ramo `feature/family-profiles`, derivada da CleanYourTV Custom Edition 2.4. Esta versão usa `versionCode` 8 para permitir atualização das versões experimentais anteriores. Está a ser preparada para Android TV 9 e não substitui nem altera o ramo estável `custom-2.4`.
 
 ## Perfis e limites
 
@@ -12,6 +12,14 @@ Edição experimental 2.6 no ramo `feature/family-profiles`, derivada da CleanYo
 
 O controlo começa desativado e só é ativado por um adulto autenticado. Não existe sequência predefinida. Para introduzir ou confirmar a sequência, usar Cima, Baixo, Esquerda e Direita; OK confirma; Voltar apaga o último movimento ou cancela quando não há movimentos. O ecrã mostra apenas indicadores de progresso, nunca a sequência introduzida. Os saldos de Criança e Xbox são independentes e persistem por dia civil. A gestão familiar permite consultar o consumo, acrescentar tempo e escolher a entrada HDMI.
 
+## Aplicações do perfil Criança
+
+Em **Gestão familiar → Aplicações para Criança**, o adulto escolhe por D-pad quais as aplicações de TV autorizadas. Na primeira utilização, a lista inicial copia as aplicações atualmente visíveis no launcher; as preferências globais de ocultação, proteção e organização não são modificadas. A lista infantil é guardada separadamente no ficheiro privado familiar. Depois da inicialização, aplicações novas ficam ocultas até serem aprovadas. Uma atualização da mesma aplicação mantém a aprovação; uma desinstalação final revoga-a, e uma reinstalação exige nova aprovação.
+
+O launcher filtra a grelha, o dock, a biblioteca e os cartões com esta política. O mesmo controlo é aplicado no ponto comum de lançamento de tiles, biblioteca e cartões; tentar abrir diretamente uma aplicação não aprovada através de uma ação interna também é bloqueado. As opções administrativas não aparecem no menu do perfil Criança e os caminhos administrativos verificam o perfil Adulto e a sequência. Estas regras só abrangem ações iniciadas pela CleanYourTV; não controlam o Android ou outros launchers.
+
+As aprovações são associadas ao nome do pacote e à hora de primeira instalação fornecida pelo Android. Esta identidade ajuda a detetar uma remoção e reinstalação mesmo que o launcher não estivesse em primeiro plano para receber o evento de desinstalação. A lista inclui aplicações com entrada de TV (`LEANBACK_LAUNCHER`), que são as que a CleanYourTV pode apresentar e abrir com a interface de televisão.
+
 Na primeira utilização desta versão, a aplicação pede o PIN parental anterior uma vez e, após o validar, solicita a nova sequência duas vezes. A nova credencial só fica ativa depois de guardada com sucesso. O PIN anterior permanece guardado como hash para permitir a recuperação com o APK 2.4; a Edição Família não o aceita como método alternativo depois de a sequência estar ativa. Se os dados da sequência ativa ficarem incompletos, a aplicação falha fechada e não volta a aceitar o PIN antigo. A sequência é derivada com PBKDF2-HMAC-SHA-256 e salt aleatório; não é guardada em texto simples. As tentativas falhadas têm limitação progressiva persistida, partilhada com a migração inicial. Em **Gestão familiar** e **Aplicações protegidas** pode alterar a sequência após nova autenticação.
 
 ## Monitorização de sessões
@@ -19,6 +27,12 @@ Na primeira utilização desta versão, a aplicação pede o PIN parental anteri
 Para iniciar aplicações em qualquer perfil familiar, o adulto tem de conceder manualmente **Acesso a dados de utilização** nas Definições Android. A autorização é um acesso especial do sistema e não é concedida pela instalação. O serviço temporário de primeiro plano só funciona durante uma sessão iniciada pelo CleanYourTV e consulta eventos de pacote em primeiro plano; não lê texto, palavras-passe ou conteúdo do ecrã. Não é usado um serviço de acessibilidade para vigiar aplicações. O perfil Adulto não tem quota; esse monitor permite regressar ao launcher e pedir a sequência novamente depois de suspensão.
 
 O serviço consulta a utilização a cada 10 segundos. O contador usa relógios monotónicos, não conta o período de ecrã desligado e divide a utilização à meia-noite em `Europe/Lisbon`. Há avisos aos 10, 5 e 1 minutos. A mudança de aplicação ou o fim do tempo podem ser reconhecidos com até cerca de 10 segundos de atraso.
+
+## Abertura da entrada Xbox
+
+Ao escolher o perfil Xbox, a CleanYourTV valida a configuração e envia imediatamente uma intent `ACTION_VIEW` com a URI de passthrough criada por `TvContract.buildChannelUriForPassthroughInput()`. Não abre novamente o seletor de entradas. Se a intent padrão não tiver destino, pode tentar a ação `input_action` configurada para o fabricante, mantendo a mesma URI e a mesma entrada autorizada. A sessão e o monitor são iniciados antes do envio; uma falha síncrona de lançamento limpa a sessão pendente. Uma sessão já pendente impede outro início.
+
+Os registos sem dados de destino podem ser consultados com `adb logcat -s FamilyXboxTiming`. `launcher_path_ms` mede o caminho no launcher até à aceitação do pedido; `launcher_dispatch_ms` mede a chamada síncrona a `startActivity`; `launcher_to_activity_pause_ms` mede o handoff da janela do launcher ao Android. Nenhum destes valores mede quando o primeiro fotograma HDMI aparece. `TvInputManager.getInputState()` expõe apenas os estados ligado, ligado em espera e desligado, não qual entrada está ativa. Por isso, a comutação do firmware tem de ser medida separadamente na TV (por exemplo, gravação de vídeo do instante em que se seleciona Xbox até aparecer a imagem); não pode ser inferida dos tempos do launcher.
 
 ## Barra de tempo sobre outras aplicações
 

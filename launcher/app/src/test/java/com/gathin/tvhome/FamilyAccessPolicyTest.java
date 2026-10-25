@@ -41,6 +41,17 @@ public class FamilyAccessPolicyTest {
                         XBOX_INPUT, 22, 0).reason);
     }
 
+    @Test public void xboxRejectsMissingConfigurationAndUnavailableInputIds() {
+        FamilyAccessPolicy.Decision missing = FamilyAccessPolicy.evaluate(FamilyTimePolicy.Profile.XBOX,
+                FamilyAccessPolicy.Target.PASSTHROUGH_INPUT, null, null, at(12, 0), 0, 0, false);
+        assertEquals(FamilyAccessPolicy.Reason.WRONG_XBOX_INPUT, missing.reason);
+
+        FamilyAccessPolicy.Decision unavailable = FamilyAccessPolicy.evaluate(FamilyTimePolicy.Profile.XBOX,
+                FamilyAccessPolicy.Target.PASSTHROUGH_INPUT, "vendor/.TvInput/REMOVED", XBOX_INPUT,
+                at(12, 0), 0, 0, false);
+        assertEquals(FamilyAccessPolicy.Reason.WRONG_XBOX_INPUT, unavailable.reason);
+    }
+
     @Test public void unknownTargetsFailClosedForChildAndXboxButAdultRemainsUnrestricted() {
         assertEquals(FamilyAccessPolicy.Reason.TARGET_NOT_ALLOWED,
                 decide(FamilyTimePolicy.Profile.CHILD_TV, FamilyAccessPolicy.Target.UNKNOWN, null, 12, 0).reason);

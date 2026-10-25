@@ -9,6 +9,7 @@ import static org.junit.Assert.assertTrue;
 import android.app.Activity;
 import android.app.UiAutomation;
 import android.content.Context;
+import android.content.ComponentName;
 import android.content.Intent;
 import android.graphics.Rect;
 import android.os.SystemClock;
@@ -70,6 +71,7 @@ public final class FamilyProfileUiTest {
         assertTrue("Test PIN setup failed", launcherState.setPin(testPin.clone()));
         assertTrue("Test sequence setup failed", launcherState.setUnlockSequence("UDLRUDLRUD".toCharArray()));
         FamilyProfileStore familyStore = new FamilyProfileStore(familyFile);
+        assertTrue("Child app test setup failed", familyStore.initializeChildApps(Collections.emptySet()));
         assertTrue("Family test state setup failed", familyStore.setEnabled(true));
     }
 
@@ -123,23 +125,12 @@ public final class FamilyProfileUiTest {
         assertNotNull("D-pad down should focus Manage profiles; focused node: "
                 + currentFocusDescription() + "; manage: " + manageState, manageFocus);
         manageFocus.recycle();
-        InstrumentationRegistry.getInstrumentation().sendKeyDownUpSync(KeyEvent.KEYCODE_BACK);
-        InstrumentationRegistry.getInstrumentation().waitForIdleSync();
-
-        InstrumentationRegistry.getInstrumentation().runOnMainSync(() -> {
-            View settings = activity.findViewById(R.id.btnSettings);
-            assertNotNull(settings);
-            assertTrue("Long-press Settings did not open Home tools", settings.performLongClick());
-        });
-        awaitVisibleText(getString(R.string.family_management));
-        for (int i = 0; i < 4; i++) {
-            InstrumentationRegistry.getInstrumentation().sendKeyDownUpSync(KeyEvent.KEYCODE_DPAD_DOWN);
-        }
         InstrumentationRegistry.getInstrumentation().sendKeyDownUpSync(KeyEvent.KEYCODE_DPAD_CENTER);
         InstrumentationRegistry.getInstrumentation().waitForIdleSync();
 
         String authDialog = awaitVisibleText(getString(R.string.sequence_entry_help));
-        assertTrue("Management sequence prompt is missing", authDialog.contains(getString(R.string.family_management)));
+        assertTrue("Management sequence prompt is missing",
+                authDialog.contains(getString(R.string.family_management)));
         assertFalse("Overlay settings appeared before sequence authentication",
                 authDialog.contains(getString(R.string.family_time_bar_open_settings)));
     }
@@ -172,6 +163,20 @@ public final class FamilyProfileUiTest {
         assertTrue(state.saveProtectedApps(Collections.singleton("com.android.settings")));
         launchMainActivity();
         awaitVisibleText(getString(R.string.family_select_profile));
+
+        clickView(R.id.familyProfileAdult);
+        awaitVisibleText(getString(R.string.sequence_entry_help));
+        int[] adultSequence = {KeyEvent.KEYCODE_DPAD_UP, KeyEvent.KEYCODE_DPAD_DOWN,
+                KeyEvent.KEYCODE_DPAD_LEFT, KeyEvent.KEYCODE_DPAD_RIGHT,
+                KeyEvent.KEYCODE_DPAD_UP, KeyEvent.KEYCODE_DPAD_DOWN,
+                KeyEvent.KEYCODE_DPAD_LEFT, KeyEvent.KEYCODE_DPAD_RIGHT,
+                KeyEvent.KEYCODE_DPAD_UP, KeyEvent.KEYCODE_DPAD_DOWN};
+        for (int move : adultSequence) {
+            InstrumentationRegistry.getInstrumentation().sendKeyDownUpSync(move);
+        }
+        InstrumentationRegistry.getInstrumentation().sendKeyDownUpSync(KeyEvent.KEYCODE_DPAD_CENTER);
+        InstrumentationRegistry.getInstrumentation().waitForIdleSync();
+
         Activity targetActivity = activity;
         InstrumentationRegistry.getInstrumentation().runOnMainSync(() -> {
             try {
@@ -188,6 +193,39 @@ public final class FamilyProfileUiTest {
         assertFalse("Protected app actions must stay hidden until sequence authentication",
                 prompt.contains(getString(R.string.context_unprotect_sequence)));
         InstrumentationRegistry.getInstrumentation().sendKeyDownUpSync(KeyEvent.KEYCODE_BACK);
+    }
+
+    @Test public void childProfileBlocksUnapprovedLibraryAndHomeTileLaunchPaths() throws Exception {
+        launchMainActivity();
+        awaitVisibleText(getString(R.string.family_select_profile));
+        InstrumentationRegistry.getInstrumentation().sendKeyDownUpSync(KeyEvent.KEYCODE_BACK);
+        InstrumentationRegistry.getInstrumentation().waitForIdleSync();
+
+        MainActivity targetActivity = (MainActivity) activity;
+        AppAdapter.Entry unapproved = new AppAdapter.Entry("Adult only",
+                new ComponentName("example.adult.only", "example.adult.only.MainActivity"), null, null);
+        InstrumentationRegistry.getInstrumentation().runOnMainSync(() -> {
+            try {
+                java.lang.reflect.Method setProfile = MainActivity.class.getDeclaredMethod(
+                        "setActiveFamilyProfile", FamilyTimePolicy.Profile.class);
+                setProfile.setAccessible(true);
+                setProfile.invoke(targetActivity, FamilyTimePolicy.Profile.CHILD_TV);
+                targetActivity.openFromLibrary("example.adult.only", unapproved.component,
+                        "Adult only");
+                targetActivity.onTileLaunch(unapproved);
+                java.lang.reflect.Method manage = MainActivity.class.getDeclaredMethod("showFamilyManagement");
+                manage.setAccessible(true);
+                manage.invoke(targetActivity);
+            } catch (Exception e) {
+                throw new AssertionError("Child profile access checks failed", e);
+            }
+        });
+        InstrumentationRegistry.getInstrumentation().waitForIdleSync();
+        assertFalse("Blocked app launch must not create a usage session",
+                new FamilyProfileStore(familyFile).hasPendingSession());
+        assertNull("A child must not open the Adult management authentication path",
+                awaitViewById(R.id.unlock_sequence_progress));
+        assertTrue("The blocked routes must leave CleanYourTV in front", !activity.isFinishing());
     }
 
     @Test public void adultAuthenticationCapturesOnlyDpadMovesAndBackDeletesTheLastMove() throws Exception {

@@ -138,6 +138,15 @@
     <string name="family_profiles">Perfis de família</string>
     <string name="family_management">Gestão familiar</string>
     <string name="family_management_help">Ative ou desative os perfis, autorize o acesso à utilização, consulte o tempo de hoje e escolha a entrada HDMI da Xbox.</string>
+    <string name="family_child_apps_action">Aplicações para Criança</string>
+    <string name="family_child_apps_title">Aplicações para Criança</string>
+    <string name="family_child_apps_help">Escolha as aplicações de TV que aparecem no perfil Criança. As novas aplicações ficam ocultas até um adulto as autorizar. Prima OK numa aplicação para alterar a visibilidade.</string>
+    <string name="family_child_app_visible">Visível para Criança</string>
+    <string name="family_child_app_hidden">Oculta para Criança</string>
+    <string name="family_child_app_saved">Visibilidade da aplicação guardada.</string>
+    <string name="family_child_app_unavailable">Esta aplicação já não está disponível.</string>
+    <string name="family_child_app_blocked">Um adulto ainda não autorizou esta aplicação para o perfil Criança.</string>
+    <string name="family_admin_adult_required">Escolha Adulto e introduza a sequência de desbloqueio para gerir a CleanYourTV.</string>
     <string name="family_enable">Ativar Edição Família</string>
     <string name="family_disable">Desativar Edição Família</string>
     <string name="family_pin_required">Defina um PIN parental antes de ativar a Edição Família.</string>

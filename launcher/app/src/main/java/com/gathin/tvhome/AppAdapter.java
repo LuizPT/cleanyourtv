@@ -116,7 +116,7 @@ public class AppAdapter extends RecyclerView.Adapter<AppAdapter.Holder> {
     /** Never shown as tiles (res/values/config.xml, hidden_apps). */
     private final Set<String> hidden;
     private final Set<String> protectedApps = new HashSet<>();
-    private final boolean showHomeSettings;
+    private boolean showHomeSettings;
     /** Calmer motion for weak GPUs (config.xml, reduced_motion): no overshoot, shorter fades. */
     private final boolean reducedMotion;
     private final List<Entry> items = new ArrayList<>();
@@ -291,6 +291,10 @@ public class AppAdapter extends RecyclerView.Adapter<AppAdapter.Holder> {
         protectedApps.clear();
         if (packages != null) protectedApps.addAll(packages);
         notifyDataSetChanged();
+    }
+
+    void setHomeSettingsVisible(boolean visible) {
+        showHomeSettings = visible;
     }
 
     private int compareEntries(Entry a, Entry b) {

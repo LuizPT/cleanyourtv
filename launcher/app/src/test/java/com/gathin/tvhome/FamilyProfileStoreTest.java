@@ -14,6 +14,9 @@ import java.nio.file.Files;
 import java.time.LocalDate;
 import java.time.ZoneId;
 import java.time.ZonedDateTime;
+import java.util.Arrays;
+import java.util.Collections;
+import java.util.Set;
 
 public class FamilyProfileStoreTest {
     private static final ZoneId LISBON = ZoneId.of("Europe/Lisbon");
@@ -59,6 +62,61 @@ public class FamilyProfileStoreTest {
         assertTrue(snapshot.timeBarVisible);
         assertEquals(FamilyProfileStore.TimeBarCorner.LEFT, snapshot.timeBarCorner);
         assertEquals(FamilyProfileStore.TimeBarContent.BOTH, snapshot.timeBarContent);
+    }
+
+    @Test public void childAppVisibilityIsSeededOnceAndPersistsIndependently() {
+        FamilyProfileStore first = store();
+        assertTrue(first.initializeChildApps(Arrays.asList("video.one", "game.two", "bad,name")));
+        assertTrue(first.childAppsInitialized());
+        assertTrue(first.isChildAppAllowed("video.one"));
+        assertTrue(first.isChildAppAllowed("game.two"));
+        assertFalse(first.isChildAppAllowed("bad,name"));
+        assertFalse(first.isChildAppAllowed("installed.later"));
+
+        assertTrue(first.setChildAppAllowed("installed.later", true));
+        assertTrue(first.initializeChildApps(Collections.singleton("replacement.baseline")));
+        FamilyProfileStore reopened = store();
+        Set<String> allowed = reopened.childAllowedApps();
+        assertTrue(allowed.contains("video.one"));
+        assertTrue(allowed.contains("installed.later"));
+        assertFalse(allowed.contains("replacement.baseline"));
+    }
+
+    @Test public void uninstallRevokesChildApprovalButPackageUpdateDoesNot() {
+        FamilyProfileStore state = store();
+        assertTrue(state.initializeChildApps(Collections.singleton("family.game")));
+        // A package replacement does not call removeChildAppApproval; approval survives the update.
+        assertTrue(store().isChildAppAllowed("family.game"));
+        assertTrue(state.removeChildAppApproval("family.game"));
+        assertFalse(store().isChildAppAllowed("family.game"));
+        // Reinstalling the same package is unapproved until an adult approves it again.
+        assertFalse(store().isChildAppAllowed("family.game"));
+        assertTrue(state.setChildAppAllowed("family.game", true));
+        assertTrue(store().isChildAppAllowed("family.game"));
+    }
+
+    @Test public void reinstallIdentityDoesNotInheritAnOldApproval() {
+        FamilyProfileStore state = store();
+        assertTrue(state.initializeChildApps(Collections.singletonMap("family.game", 100L)));
+        assertTrue(state.isChildAppAllowed("family.game", 100L));
+        // Package updates preserve firstInstallTime; a full uninstall/reinstall gets a new identity.
+        assertTrue(state.isChildAppAllowed("family.game", 100L));
+        assertFalse(state.isChildAppAllowed("family.game", 200L));
+        assertTrue(state.setChildAppAllowed("family.game", 200L, true));
+        assertTrue(store().isChildAppAllowed("family.game", 200L));
+        assertFalse(store().isChildAppAllowed("family.game", 100L));
+    }
+
+    @Test public void uninitializedOrCorruptChildVisibilityFailsClosed() throws Exception {
+        assertFalse(store().isChildAppAllowed("video.one"));
+        File file = new File(folder.getRoot(), "family-profiles.properties");
+        try (FileOutputStream output = new FileOutputStream(file)) {
+            output.write("child_apps_initialized=true\nchild_apps=../bad\n"
+                    .getBytes(java.nio.charset.StandardCharsets.UTF_8));
+        }
+        FamilyProfileStore damaged = new FamilyProfileStore(file);
+        assertFalse(damaged.isChildAppAllowed("video.one"));
+        assertTrue(damaged.hasStorageError());
     }
 
     @Test public void childAndXboxUseSeparatePersistentDailyBalances() {
@@ -187,6 +245,26 @@ public class FamilyProfileStoreTest {
         assertFalse(snapshot.sessionPending);
         assertTrue(snapshot.clockUncertain);
         assertEquals(0L, snapshot.xboxUsedMs);
+    }
+
+    @Test public void xboxSessionCannotBeDuplicatedAndFailedLaunchCanBeRolledBack() {
+        LocalDate day = LocalDate.of(2026, 10, 23);
+        long startWall = wall(day, 12, 0);
+        long elapsed = 900_000L;
+        FamilyProfileStore state = store();
+
+        assertTrue(state.startSession(FamilyProfileStore.Profile.XBOX, day,
+                startWall, elapsed, elapsed, true));
+        assertFalse("A second launch must not create another active session",
+                state.startSession(FamilyProfileStore.Profile.XBOX, day,
+                        startWall, elapsed, elapsed, true));
+        assertTrue(state.hasPendingSession());
+
+        FamilyProfileStore.UsageUpdate rolledBack = state.finishSession(day,
+                startWall, elapsed, elapsed);
+        assertTrue(rolledBack.saved);
+        assertFalse(state.hasPendingSession());
+        assertEquals(0L, store().snapshot(day).xboxUsedMs);
     }
 
     @Test public void authenticatedExtensionsArePersistentAndBounded() {

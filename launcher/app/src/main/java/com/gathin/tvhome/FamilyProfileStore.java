@@ -10,8 +10,13 @@ import java.time.LocalDate;
 import java.time.ZoneId;
 import java.util.ArrayList;
 import java.util.Collections;
+import java.util.Collection;
+import java.util.HashSet;
+import java.util.HashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.Properties;
+import java.util.Set;
 
 /** Private family settings and daily usage. A profile is saved only while a monitored app session is active. */
 final class FamilyProfileStore {
@@ -36,6 +41,8 @@ final class FamilyProfileStore {
     private static final String TIME_BAR_VISIBLE = "time_bar_visible";
     private static final String TIME_BAR_CORNER = "time_bar_corner";
     private static final String TIME_BAR_CONTENT = "time_bar_content";
+    private static final String CHILD_APPS_INITIALIZED = "child_apps_initialized";
+    private static final String CHILD_APPS = "child_apps";
     private static final long CLOCK_TOLERANCE_MS = 2L * 60L * 1000L;
     private static final ZoneId FAMILY_ZONE = ZoneId.of("Europe/Lisbon");
 
@@ -176,6 +183,89 @@ final class FamilyProfileStore {
         String clean = inputId.trim();
         if (clean.isEmpty()) p.remove(XBOX_INPUT);
         else p.setProperty(XBOX_INPUT, clean);
+        return write(p);
+    }
+
+    /** Captures the apps currently visible in the launcher once, leaving later installs unapproved. */
+    synchronized boolean initializeChildApps(Collection<String> visiblePackages) {
+        Map<String, Long> packages = new HashMap<>();
+        if (visiblePackages != null) for (String pkg : visiblePackages) packages.put(pkg, 0L);
+        return initializeChildApps(packages);
+    }
+
+    synchronized boolean initializeChildApps(Map<String, Long> visiblePackages) {
+        Properties p = read();
+        if (storageError) return false;
+        if (Boolean.parseBoolean(p.getProperty(CHILD_APPS_INITIALIZED, "false"))) return true;
+        Map<String, Long> valid = new HashMap<>();
+        if (visiblePackages != null) {
+            for (Map.Entry<String, Long> entry : visiblePackages.entrySet()) {
+                if (validPackageName(entry.getKey()) && entry.getValue() != null && entry.getValue() >= 0L) {
+                    valid.put(entry.getKey(), entry.getValue());
+                }
+            }
+        }
+        p.setProperty(CHILD_APPS, joinChildApprovals(valid));
+        p.setProperty(CHILD_APPS_INITIALIZED, "true");
+        return write(p);
+    }
+
+    synchronized boolean childAppsInitialized() {
+        Properties p = read();
+        return !storageError && Boolean.parseBoolean(p.getProperty(CHILD_APPS_INITIALIZED, "false"));
+    }
+
+    synchronized Set<String> childAllowedApps() {
+        Properties p = read();
+        if (storageError || !Boolean.parseBoolean(p.getProperty(CHILD_APPS_INITIALIZED, "false"))) {
+            return Collections.emptySet();
+        }
+        return Collections.unmodifiableSet(new HashSet<>(parseChildApprovals(p.getProperty(CHILD_APPS, "")).keySet()));
+    }
+
+    synchronized boolean isChildAppAllowed(String packageName) {
+        if (!validPackageName(packageName)) return false;
+        Properties p = read();
+        return !storageError && Boolean.parseBoolean(p.getProperty(CHILD_APPS_INITIALIZED, "false"))
+                && parseChildApprovals(p.getProperty(CHILD_APPS, "")).containsKey(packageName);
+    }
+
+    synchronized boolean isChildAppAllowed(String packageName, long firstInstallTime) {
+        if (!validPackageName(packageName) || firstInstallTime < 0L) return false;
+        Properties p = read();
+        Long savedInstallTime = parseChildApprovals(p.getProperty(CHILD_APPS, "")).get(packageName);
+        return !storageError && Boolean.parseBoolean(p.getProperty(CHILD_APPS_INITIALIZED, "false"))
+                && savedInstallTime != null && savedInstallTime == firstInstallTime;
+    }
+
+    synchronized boolean setChildAppAllowed(String packageName, boolean allowed) {
+        return setChildAppAllowed(packageName, 0L, allowed);
+    }
+
+    synchronized boolean setChildAppAllowed(String packageName, long firstInstallTime, boolean allowed) {
+        if (!validPackageName(packageName)) return false;
+        if (firstInstallTime < 0L) return false;
+        Properties p = read();
+        if (storageError || !Boolean.parseBoolean(p.getProperty(CHILD_APPS_INITIALIZED, "false"))) return false;
+        Map<String, Long> packages = parseChildApprovals(p.getProperty(CHILD_APPS, ""));
+        boolean changed;
+        if (allowed) {
+            Long old = packages.put(packageName, firstInstallTime);
+            changed = old == null || old != firstInstallTime;
+        } else changed = packages.remove(packageName) != null;
+        if (!changed) return true;
+        p.setProperty(CHILD_APPS, joinChildApprovals(packages));
+        return write(p);
+    }
+
+    /** A full uninstall revokes approval; package updates retain it. */
+    synchronized boolean removeChildAppApproval(String packageName) {
+        if (!validPackageName(packageName)) return false;
+        Properties p = read();
+        if (storageError || !Boolean.parseBoolean(p.getProperty(CHILD_APPS_INITIALIZED, "false"))) return !storageError;
+        Map<String, Long> packages = parseChildApprovals(p.getProperty(CHILD_APPS, ""));
+        if (packages.remove(packageName) == null) return true;
+        p.setProperty(CHILD_APPS, joinChildApprovals(packages));
         return write(p);
     }
 
@@ -493,6 +583,61 @@ final class FamilyProfileStore {
         return "extra." + profile.name().toLowerCase(java.util.Locale.ROOT) + "." + day;
     }
 
+    private static String joinChildApprovals(Map<String, Long> packages) {
+        List<String> ordered = new ArrayList<>();
+        for (Map.Entry<String, Long> entry : packages.entrySet()) {
+            ordered.add(entry.getKey() + "@" + entry.getValue());
+        }
+        Collections.sort(ordered);
+        return String.join(",", ordered);
+    }
+
+    private static Map<String, Long> parseChildApprovals(String value) {
+        Map<String, Long> packages = new HashMap<>();
+        if (value == null || value.isEmpty()) return packages;
+        for (String approval : value.split(",", -1)) {
+            int separator = approval.lastIndexOf('@');
+            if (separator <= 0 || separator == approval.length() - 1) continue;
+            String pkg = approval.substring(0, separator);
+            try { packages.put(pkg, Long.parseLong(approval.substring(separator + 1))); }
+            catch (NumberFormatException ignored) { }
+        }
+        return packages;
+    }
+
+    private static boolean validPackageName(String value) {
+        if (value == null || value.isEmpty() || value.length() > 255
+                || value.startsWith(".") || value.endsWith(".")) return false;
+        boolean lastWasDot = false;
+        for (int i = 0; i < value.length(); i++) {
+            char c = value.charAt(i);
+            if (c == '.') {
+                if (lastWasDot) return false;
+                lastWasDot = true;
+            } else {
+                if (!(c >= 'A' && c <= 'Z') && !(c >= 'a' && c <= 'z')
+                        && !(c >= '0' && c <= '9') && c != '_') return false;
+                lastWasDot = false;
+            }
+        }
+        return !lastWasDot;
+    }
+
+    private static boolean validPackageList(String value) {
+        if (value == null) return false;
+        if (value.isEmpty()) return true;
+        Set<String> seen = new HashSet<>();
+        for (String approval : value.split(",", -1)) {
+            int separator = approval.lastIndexOf('@');
+            if (separator <= 0 || separator == approval.length() - 1) return false;
+            String pkg = approval.substring(0, separator);
+            if (!validPackageName(pkg) || !seen.add(pkg)) return false;
+            try { if (Long.parseLong(approval.substring(separator + 1)) < 0L) return false; }
+            catch (NumberFormatException invalid) { return false; }
+        }
+        return true;
+    }
+
     private static void clearSession(Properties p) {
         p.remove(SESSION_PROFILE);
         p.remove(SESSION_DAY);
@@ -589,9 +734,14 @@ final class FamilyProfileStore {
     private static boolean validState(Properties p) {
         if (!validBoolean(p.getProperty(ENABLED)) || !validBoolean(p.getProperty(CLOCK_UNCERTAIN))
                 || !validBoolean(p.getProperty(TIME_BAR_VISIBLE))
+                || !validBoolean(p.getProperty(CHILD_APPS_INITIALIZED))
                 || !validEnum(TimeBarCorner.class, p.getProperty(TIME_BAR_CORNER))
                 || !validEnum(TimeBarContent.class, p.getProperty(TIME_BAR_CONTENT))
                 || !validDay(p.getProperty(LAST_DAY))) return false;
+        String childApps = p.getProperty(CHILD_APPS);
+        boolean childAppsInitialized = Boolean.parseBoolean(p.getProperty(CHILD_APPS_INITIALIZED, "false"));
+        if (childAppsInitialized != (childApps != null)
+                || (childApps != null && !validPackageList(childApps))) return false;
         if (!validOptionalNonnegative(p.getProperty(LAST_WALL))
                 || !validOptionalNonnegative(p.getProperty(LAST_ELAPSED))) return false;
         if (p.getProperty(LAST_WALL) != null && p.getProperty(LAST_ELAPSED) == null) return false;

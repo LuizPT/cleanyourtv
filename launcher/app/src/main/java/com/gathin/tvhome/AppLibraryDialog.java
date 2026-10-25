@@ -43,6 +43,7 @@ final class AppLibraryDialog {
 
     private final MainActivity host;
     private final boolean orderOnly;
+    private final boolean restrictToVisible;
     private final Set<String> hidden;
     private final Set<String> protectedApps;
     private final List<App> apps;
@@ -51,14 +52,15 @@ final class AppLibraryDialog {
     private final LinearLayout rows;
 
     static void show(MainActivity host, boolean orderOnly, List<String> order,
-                     Set<String> hidden, Set<String> protectedApps) {
-        new AppLibraryDialog(host, orderOnly, order, hidden, protectedApps).show();
+                     Set<String> hidden, Set<String> protectedApps, boolean restrictToVisible) {
+        new AppLibraryDialog(host, orderOnly, order, hidden, protectedApps, restrictToVisible).show();
     }
 
     private AppLibraryDialog(MainActivity host, boolean orderOnly, List<String> order,
-                             Set<String> hidden, Set<String> protectedApps) {
+                             Set<String> hidden, Set<String> protectedApps, boolean restrictToVisible) {
         this.host = host;
         this.orderOnly = orderOnly;
+        this.restrictToVisible = restrictToVisible;
         this.hidden = new HashSet<>(hidden);
         this.protectedApps = new HashSet<>(protectedApps);
         this.order = new ArrayList<>(order);
@@ -98,7 +100,10 @@ final class AppLibraryDialog {
 
         LinearLayout footer = new LinearLayout(host);
         footer.setGravity(Gravity.END | Gravity.CENTER_VERTICAL);
-        footer.addView(button(host.getString(orderOnly ? R.string.applications : R.string.organize_apps), () -> switchMode(!orderOnly)), buttonLp());
+        if (!restrictToVisible) {
+            footer.addView(button(host.getString(orderOnly ? R.string.applications : R.string.organize_apps),
+                    () -> switchMode(!orderOnly)), buttonLp());
+        }
         footer.addView(button(host.getString(R.string.close), dialog::dismiss), buttonLp());
         panel.addView(footer, new LinearLayout.LayoutParams(-1, -2));
 
@@ -155,7 +160,11 @@ final class AppLibraryDialog {
                 App app = byPackage.get(pkg);
                 if (app != null && !hidden.contains(pkg)) listed.add(app);
             }
-        } else listed.addAll(apps);
+        } else {
+            for (App app : apps) {
+                if (!restrictToVisible || !hidden.contains(app.pkg)) listed.add(app);
+            }
+        }
 
         if (listed.isEmpty()) {
             TextView empty = new TextView(host);
@@ -207,7 +216,7 @@ final class AppLibraryDialog {
                 if (orderOnly) host.showMoveOptionsFromLibrary(app.pkg);
                 else host.openFromLibrary(app.pkg, app.component, app.label);
             });
-            row.setOnLongClickListener(v -> {
+            if (!restrictToVisible) row.setOnLongClickListener(v -> {
                 host.showLibraryContextMenu(app.pkg, app.label);
                 return true;
             });
@@ -231,7 +240,7 @@ final class AppLibraryDialog {
     private void switchMode(boolean order) {
         List<String> saved = new ArrayList<>(this.order);
         dialog.dismiss();
-        AppLibraryDialog.show(host, order, saved, hidden, protectedApps);
+        AppLibraryDialog.show(host, order, saved, hidden, protectedApps, restrictToVisible);
     }
 
     private TextView button(String text, Runnable action) {

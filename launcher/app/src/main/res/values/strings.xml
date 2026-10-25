@@ -138,6 +138,15 @@
     <string name="family_profiles" tools:ignore="MissingTranslation">Family profiles</string>
     <string name="family_management" tools:ignore="MissingTranslation">Family management</string>
     <string name="family_management_help" tools:ignore="MissingTranslation">Turn profiles on or off, grant Usage Access, view today’s use and choose the Xbox HDMI input.</string>
+    <string name="family_child_apps_action" tools:ignore="MissingTranslation">Applications for Child</string>
+    <string name="family_child_apps_title" tools:ignore="MissingTranslation">Applications for Child</string>
+    <string name="family_child_apps_help" tools:ignore="MissingTranslation">Choose which TV apps appear in the Child profile. New apps stay hidden until an adult approves them. Press OK on an app to change its visibility.</string>
+    <string name="family_child_app_visible" tools:ignore="MissingTranslation">Shown for Child</string>
+    <string name="family_child_app_hidden" tools:ignore="MissingTranslation">Hidden from Child</string>
+    <string name="family_child_app_saved" tools:ignore="MissingTranslation">Child app visibility saved.</string>
+    <string name="family_child_app_unavailable" tools:ignore="MissingTranslation">This app is no longer available.</string>
+    <string name="family_child_app_blocked" tools:ignore="MissingTranslation">An adult has not approved this app for the Child profile.</string>
+    <string name="family_admin_adult_required" tools:ignore="MissingTranslation">Choose Adult and enter the unlock sequence to manage CleanYourTV.</string>
     <string name="family_enable" tools:ignore="MissingTranslation">Turn on Family Edition</string>
     <string name="family_disable" tools:ignore="MissingTranslation">Turn off Family Edition</string>
     <string name="family_pin_required" tools:ignore="MissingTranslation">Set a parental PIN before enabling Family Edition.</string>
