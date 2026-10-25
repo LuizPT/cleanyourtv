@@ -157,4 +157,29 @@
     <string name="family_monitor_notification_title">Sessão familiar ativa</string>
     <string name="family_monitor_notification_text">A monitorizar o perfil %1$s até regressar ao Home.</string>
     <string name="family_monitor_channel">Sessão familiar</string>
+    <string name="family_time_bar_section">Barra de tempo</string>
+    <string name="family_time_bar_help">A barra é apenas informativa. O Android exige autorização separada para a apresentar sobre outras aplicações. Ocultá-la não interrompe a contagem nem altera os limites.</string>
+    <string name="family_time_bar_permission_granted">A autorização de sobreposição está ativa. A barra pode aparecer sobre as aplicações.</string>
+    <string name="family_time_bar_permission_missing">A autorização de sobreposição está desligada. O tempo continua a ser contado e limitado; a barra ficará oculta.</string>
+    <string name="family_time_bar_open_settings">Abrir definições de sobreposição do Android</string>
+    <string name="family_time_bar_settings_unavailable">As definições de sobreposição do Android não estão disponíveis nesta TV.</string>
+    <string name="family_time_bar_visible">Mostrar barra de tempo: Sim</string>
+    <string name="family_time_bar_hidden">Mostrar barra de tempo: Não</string>
+    <string name="family_time_bar_corner_status">Posição: %1$s</string>
+    <string name="family_time_bar_corner_left">canto inferior esquerdo</string>
+    <string name="family_time_bar_corner_right">canto inferior direito</string>
+    <string name="family_time_bar_content_status">Mostrar: %1$s</string>
+    <string name="family_time_bar_content_both">tempo utilizado e restante</string>
+    <string name="family_time_bar_content_used">tempo utilizado</string>
+    <string name="family_time_bar_content_remaining">tempo restante</string>
+    <string name="family_time_bar_title">TEMPO DE HOJE</string>
+    <string name="family_time_bar_used">%1$d / %2$d min</string>
+    <string name="family_time_bar_remaining">%1$d min restantes</string>
+    <string name="family_time_bar_child_ended">O teu tempo de televisão terminou por hoje.</string>
+    <string name="family_time_bar_xbox_ended">O teu tempo de jogo terminou por hoje.</string>
+    <plurals name="family_time_bar_warning">
+        <item quantity="one">Falta %1$d minuto</item>
+        <item quantity="many">Faltam %1$d minutos</item>
+        <item quantity="other">Faltam %1$d minutos</item>
+    </plurals>
 </resources>

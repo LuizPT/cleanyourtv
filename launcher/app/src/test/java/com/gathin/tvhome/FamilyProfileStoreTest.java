@@ -40,11 +40,25 @@ public class FamilyProfileStoreTest {
         assertFalse(first.isEnabled());
         assertTrue(first.setEnabled(true));
         assertTrue(first.setXboxInputId("vendor/.TvInput/HW1"));
+        assertTrue(first.snapshot(day).timeBarVisible);
+        assertTrue(first.setTimeBarVisible(false));
+        assertTrue(first.setTimeBarCorner(FamilyProfileStore.TimeBarCorner.RIGHT));
+        assertTrue(first.setTimeBarContent(FamilyProfileStore.TimeBarContent.USED));
 
         FamilyProfileStore reopened = store();
         assertTrue(reopened.isEnabled());
         assertEquals("vendor/.TvInput/HW1", reopened.snapshot(day).xboxInputId);
+        assertFalse(reopened.snapshot(day).timeBarVisible);
+        assertEquals(FamilyProfileStore.TimeBarCorner.RIGHT, reopened.snapshot(day).timeBarCorner);
+        assertEquals(FamilyProfileStore.TimeBarContent.USED, reopened.snapshot(day).timeBarContent);
         assertEquals(0L, reopened.snapshot(day).childUsedMs);
+    }
+
+    @Test public void timeBarPreferencesHaveNonIntrusiveDefaults() {
+        FamilyProfileStore.Snapshot snapshot = store().snapshot(LocalDate.of(2026, 10, 23));
+        assertTrue(snapshot.timeBarVisible);
+        assertEquals(FamilyProfileStore.TimeBarCorner.LEFT, snapshot.timeBarCorner);
+        assertEquals(FamilyProfileStore.TimeBarContent.BOTH, snapshot.timeBarContent);
     }
 
     @Test public void childAndXboxUseSeparatePersistentDailyBalances() {

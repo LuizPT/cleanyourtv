@@ -98,6 +98,7 @@ public class MainActivity extends Activity implements AppAdapter.TileListener {
     private LauncherState launcherState;
     private FamilyProfileStore familyStore;
     private TextView familyStatus;
+    private TextView familyOverlayPermissionStatus;
     private FamilyTimePolicy.Profile activeFamilyProfile;
     private boolean familyActivityResumed;
     private boolean familySelectorShowing;
@@ -467,6 +468,7 @@ public class MainActivity extends Activity implements AppAdapter.TileListener {
     protected void onResume() {
         super.onResume();
         familyActivityResumed = true;
+        updateFamilyOverlayPermissionStatus();
         finishFamilyUsageSession();
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
             registerReceiver(packageReceiver, packageFilter, Context.RECEIVER_NOT_EXPORTED);
@@ -1883,12 +1885,14 @@ public class MainActivity extends Activity implements AppAdapter.TileListener {
             return;
         }
         if (!update.warningsMinutes.isEmpty() && update.remainingMs > 0L) {
-            int lowest = Collections.min(update.warningsMinutes);
-            Toast.makeText(this, getString(R.string.family_time_warning, lowest), Toast.LENGTH_LONG).show();
+            int minutes = FamilyTimeBarPolicy.warningMinutes(update.warningsMinutes, update.remainingMs);
+            Toast.makeText(this, getString(R.string.family_time_warning, minutes), Toast.LENGTH_LONG).show();
         }
         if (trackedFamilyProfile != null && update.remainingMs <= 0L) {
             if (!familyLimitNotified) {
-                Toast.makeText(this, R.string.family_daily_limit, Toast.LENGTH_LONG).show();
+                int message = trackedFamilyProfile == FamilyTimePolicy.Profile.XBOX
+                        ? R.string.family_time_bar_xbox_ended : R.string.family_time_bar_child_ended;
+                Toast.makeText(this, message, Toast.LENGTH_LONG).show();
                 familyLimitNotified = true;
             }
             activeFamilyProfile = null;
@@ -2192,6 +2196,7 @@ public class MainActivity extends Activity implements AppAdapter.TileListener {
         button.setMinHeight(dp(48));
         button.setBackgroundResource(R.drawable.focus_row_bg);
         button.setFocusable(enabled);
+        button.setFocusableInTouchMode(enabled);
         button.setClickable(enabled);
         button.setEnabled(enabled);
         button.setAlpha(enabled ? 1f : 0.68f);
@@ -2319,6 +2324,57 @@ public class MainActivity extends Activity implements AppAdapter.TileListener {
                 : R.string.family_usage_access_missing, 14,
                 usageAccess ? 0xFFB8C3D1 : 0xFFFFD180), familyChoiceLp());
         addFamilyManagementAction(content, R.string.family_usage_access_open, this::openFamilyUsageAccessSettings);
+
+        content.addView(familyText(R.string.family_time_bar_section, 18, Color.WHITE), familyChoiceLp());
+        TextView overlayHelp = familyText(R.string.family_time_bar_help, 14, 0xFFD8DDE5);
+        content.addView(overlayHelp, familyChoiceLp());
+        TextView overlayStatus = familyText(FamilyTimeOverlay.hasPermission(this)
+                ? R.string.family_time_bar_permission_granted : R.string.family_time_bar_permission_missing,
+                14, FamilyTimeOverlay.hasPermission(this) ? 0xFFB8C3D1 : 0xFFFFD180);
+        familyOverlayPermissionStatus = overlayStatus;
+        content.addView(overlayStatus, familyChoiceLp());
+        dialog.setOnDismissListener(ignored -> {
+            if (familyOverlayPermissionStatus == overlayStatus) familyOverlayPermissionStatus = null;
+        });
+        addFamilyManagementAction(content, R.string.family_time_bar_open_settings,
+                this::openFamilyOverlaySettings);
+
+        boolean[] showTimeBar = { snapshot.timeBarVisible };
+        TextView visibilityOption = familyChoice(getString(showTimeBar[0]
+                ? R.string.family_time_bar_visible : R.string.family_time_bar_hidden), true, () -> { });
+        visibilityOption.setOnClickListener(view -> {
+            boolean next = !showTimeBar[0];
+            if (familyStore.setTimeBarVisible(next)) {
+                showTimeBar[0] = next;
+                visibilityOption.setText(getString(next ? R.string.family_time_bar_visible
+                        : R.string.family_time_bar_hidden));
+            } else Toast.makeText(this, R.string.family_storage_error, Toast.LENGTH_LONG).show();
+        });
+        content.addView(visibilityOption, familyChoiceLp());
+
+        FamilyProfileStore.TimeBarCorner[] barCorner = { snapshot.timeBarCorner };
+        TextView cornerOption = familyChoice(timeBarCornerLabel(barCorner[0]), true, () -> { });
+        cornerOption.setOnClickListener(view -> {
+            FamilyProfileStore.TimeBarCorner next = barCorner[0] == FamilyProfileStore.TimeBarCorner.LEFT
+                    ? FamilyProfileStore.TimeBarCorner.RIGHT : FamilyProfileStore.TimeBarCorner.LEFT;
+            if (familyStore.setTimeBarCorner(next)) {
+                barCorner[0] = next;
+                cornerOption.setText(timeBarCornerLabel(next));
+            } else Toast.makeText(this, R.string.family_storage_error, Toast.LENGTH_LONG).show();
+        });
+        content.addView(cornerOption, familyChoiceLp());
+
+        FamilyProfileStore.TimeBarContent[] barContent = { snapshot.timeBarContent };
+        TextView contentOption = familyChoice(timeBarContentLabel(barContent[0]), true, () -> { });
+        contentOption.setOnClickListener(view -> {
+            FamilyProfileStore.TimeBarContent next = nextTimeBarContent(barContent[0]);
+            if (familyStore.setTimeBarContent(next)) {
+                barContent[0] = next;
+                contentOption.setText(timeBarContentLabel(next));
+            } else Toast.makeText(this, R.string.family_storage_error, Toast.LENGTH_LONG).show();
+        });
+        content.addView(contentOption, familyChoiceLp());
+
         String inputName = getString(R.string.family_xbox_input_required);
         TvInputInfo configured = tvInputInfo(snapshot.xboxInputId);
         if (configured != null) {
@@ -2412,6 +2468,44 @@ public class MainActivity extends Activity implements AppAdapter.TileListener {
     private void addFamilyManagementAction(LinearLayout content, int label, Runnable action) {
         TextView button = familyChoice(getString(label), true, action);
         content.addView(button, familyChoiceLp());
+    }
+
+    private String timeBarCornerLabel(FamilyProfileStore.TimeBarCorner corner) {
+        return getString(R.string.family_time_bar_corner_status,
+                getString(corner == FamilyProfileStore.TimeBarCorner.RIGHT
+                        ? R.string.family_time_bar_corner_right : R.string.family_time_bar_corner_left));
+    }
+
+    private String timeBarContentLabel(FamilyProfileStore.TimeBarContent content) {
+        int label = content == FamilyProfileStore.TimeBarContent.USED ? R.string.family_time_bar_content_used
+                : content == FamilyProfileStore.TimeBarContent.REMAINING
+                    ? R.string.family_time_bar_content_remaining : R.string.family_time_bar_content_both;
+        return getString(R.string.family_time_bar_content_status, getString(label));
+    }
+
+    private static FamilyProfileStore.TimeBarContent nextTimeBarContent(
+            FamilyProfileStore.TimeBarContent content) {
+        if (content == FamilyProfileStore.TimeBarContent.BOTH) return FamilyProfileStore.TimeBarContent.REMAINING;
+        if (content == FamilyProfileStore.TimeBarContent.REMAINING) return FamilyProfileStore.TimeBarContent.USED;
+        return FamilyProfileStore.TimeBarContent.BOTH;
+    }
+
+    private void updateFamilyOverlayPermissionStatus() {
+        if (familyOverlayPermissionStatus == null) return;
+        boolean granted = FamilyTimeOverlay.hasPermission(this);
+        familyOverlayPermissionStatus.setText(granted ? R.string.family_time_bar_permission_granted
+                : R.string.family_time_bar_permission_missing);
+        familyOverlayPermissionStatus.setTextColor(granted ? 0xFFB8C3D1 : 0xFFFFD180);
+    }
+
+    private void openFamilyOverlaySettings() {
+        try {
+            Intent settings = new Intent(Settings.ACTION_MANAGE_OVERLAY_PERMISSION,
+                    Uri.parse("package:" + getPackageName()));
+            startActivity(settings);
+        } catch (RuntimeException unavailable) {
+            Toast.makeText(this, R.string.family_time_bar_settings_unavailable, Toast.LENGTH_LONG).show();
+        }
     }
 
     private void addFamilyTime(Dialog dialog, FamilyProfileStore.Profile profile, LocalDate day) {

@@ -41,9 +41,13 @@ public final class FamilySessionMonitorService extends Service {
     private FamilyProfileStore store;
     private UsageStatsManager usageStats;
     private FamilyForegroundTracker tracker;
+    private FamilyTimeOverlay timeOverlay;
     private boolean receiverRegistered;
     private boolean finishing;
     private long lastHomeAttemptElapsed;
+    private int overlayWarningMinutes;
+    private long overlayWarningUntilElapsed;
+    private String overlayTerminalNotice;
 
     private final Runnable poll = new Runnable() {
         @Override public void run() {
@@ -68,6 +72,7 @@ public final class FamilySessionMonitorService extends Service {
                 store.setSessionScreenOn(screenOn, now.toLocalDate(), now.toInstant().toEpochMilli(),
                         SystemClock.elapsedRealtime(), SystemClock.uptimeMillis());
             }
+            if (!screenOn) hideTimeBar();
             if (screenOn && store.snapshot(now.toLocalDate()).mustReturnHome) {
                 handler.postDelayed(FamilySessionMonitorService.this::returnHome, 250L);
             }
@@ -78,6 +83,7 @@ public final class FamilySessionMonitorService extends Service {
         super.onCreate();
         store = new FamilyProfileStore(new File(getFilesDir(), "family-profiles.properties"));
         usageStats = (UsageStatsManager) getSystemService(USAGE_STATS_SERVICE);
+        timeOverlay = new FamilyTimeOverlay(this);
         createNotificationChannel();
         IntentFilter filter = new IntentFilter();
         filter.addAction(Intent.ACTION_SCREEN_OFF);
@@ -98,6 +104,7 @@ public final class FamilySessionMonitorService extends Service {
         startForeground(NOTIFICATION_ID, buildNotification());
         if (usageStats == null || !FamilyUsageAccess.isGranted(this)) {
             showMonitorFailure();
+            hideTimeBar();
             returnHome();
             handler.removeCallbacks(poll);
             handler.postDelayed(poll, POLL_MS);
@@ -123,6 +130,7 @@ public final class FamilySessionMonitorService extends Service {
     @Override public void onDestroy() {
         finishing = true;
         handler.removeCallbacksAndMessages(null);
+        if (timeOverlay != null) timeOverlay.hide();
         if (receiverRegistered) {
             unregisterReceiver(screenReceiver);
             receiverRegistered = false;
@@ -137,6 +145,7 @@ public final class FamilySessionMonitorService extends Service {
         }
         if (!FamilyUsageAccess.isGranted(this)) {
             showMonitorFailure();
+            hideTimeBar();
             returnHome();
             return;
         }
@@ -147,11 +156,13 @@ public final class FamilySessionMonitorService extends Service {
         long uptimeNow = SystemClock.uptimeMillis();
         FamilyProfileStore.Snapshot before = store.snapshot(now.toLocalDate());
         if (before.mustReturnHome) {
+            hideTimeBar();
             if (isScreenOn()) returnHome();
             else store.setSessionScreenOn(false, now.toLocalDate(), wallNow, elapsedNow, uptimeNow);
             return;
         }
         if (before.clockUncertain || store.hasStorageError()) {
+            hideTimeBar();
             returnHome();
             return;
         }
@@ -160,6 +171,7 @@ public final class FamilySessionMonitorService extends Service {
                 ? before.sessionPackage : null);
         if (!readForegroundEvents(before, wallNow)) {
             showMonitorFailure();
+            hideTimeBar();
             returnHome();
             return;
         }
@@ -169,12 +181,14 @@ public final class FamilySessionMonitorService extends Service {
         boolean screenOn = isScreenOn();
         if (!screenOn) {
             store.setSessionScreenOn(false, now.toLocalDate(), wallNow, elapsedNow, uptimeNow);
+            hideTimeBar();
             return;
         }
         if (store.snapshot(now.toLocalDate()).sessionScreenOn == false) {
             store.setSessionScreenOn(true, now.toLocalDate(), wallNow, elapsedNow, uptimeNow);
             // Waking in an app always returns to the launcher, where Adult must authenticate again.
             store.markReturnHomeOnWake();
+            hideTimeBar();
             returnHome();
             return;
         }
@@ -189,15 +203,22 @@ public final class FamilySessionMonitorService extends Service {
                 now.toLocalDate(), wallNow, elapsedNow, uptimeNow);
         if (!update.saved || store.hasStorageError()) {
             showMonitorFailure();
+            hideTimeBar();
             returnHome();
             return;
         }
         if (!update.warningsMinutes.isEmpty() && update.remainingMs > 0L) {
-            int lowest = java.util.Collections.min(update.warningsMinutes);
-            Toast.makeText(this, getString(R.string.family_time_warning, lowest), Toast.LENGTH_LONG).show();
+            overlayWarningMinutes = FamilyTimeBarPolicy.warningMinutes(update.warningsMinutes, update.remainingMs);
+            overlayWarningUntilElapsed = elapsedNow + 6_000L;
         }
 
         FamilyProfileStore.Snapshot current = store.snapshot(now.toLocalDate());
+        boolean barShown = updateTimeBar(current, now.toLocalDate(),
+                foreground == FamilyMonitorPolicy.Foreground.APP, screenOn, currentOverlayNotice(elapsedNow));
+        if (!update.warningsMinutes.isEmpty() && update.remainingMs > 0L && !barShown) {
+            Toast.makeText(this, getResources().getQuantityString(R.plurals.family_time_bar_warning,
+                    overlayWarningMinutes, overlayWarningMinutes), Toast.LENGTH_LONG).show();
+        }
         long sessionAgeMs = Math.max(0L, wallNow - current.sessionStartedWallMs);
         FamilyMonitorPolicy.Action action = FamilyMonitorPolicy.decide(true, true, current.sessionPending,
                 screenOn, current.sessionProfile, foreground, now,
@@ -205,6 +226,7 @@ public final class FamilySessionMonitorService extends Service {
                 current.sessionProfile == FamilyProfileStore.Profile.XBOX ? current.xboxExtensionMs : current.childExtensionMs,
                 current.clockUncertain, current.sessionPackageObserved, sessionAgeMs);
         if (action == FamilyMonitorPolicy.Action.RETURN_HOME) {
+            showEndNoticeIfNeeded(current, foreground, now.toLocalDate(), now);
             returnHome();
         } else if (action == FamilyMonitorPolicy.Action.FINISH_SESSION) {
             store.finishSession(now.toLocalDate(), wallNow, elapsedNow, uptimeNow);
@@ -212,6 +234,52 @@ public final class FamilySessionMonitorService extends Service {
         } else if (action == FamilyMonitorPolicy.Action.STOP) {
             stopMonitor();
         }
+    }
+
+    private boolean updateTimeBar(FamilyProfileStore.Snapshot snapshot, LocalDate day,
+                                  boolean foregroundApp, boolean screenOn, String notice) {
+        if (timeOverlay == null) timeOverlay = new FamilyTimeOverlay(this);
+        return timeOverlay.update(snapshot, day, foregroundApp, screenOn, notice);
+    }
+
+    private void hideTimeBar() {
+        if (timeOverlay != null) timeOverlay.hide();
+    }
+
+    private String currentOverlayNotice(long elapsedNow) {
+        if (overlayTerminalNotice != null) return overlayTerminalNotice;
+        if (overlayWarningMinutes > 0 && elapsedNow < overlayWarningUntilElapsed) {
+            return getResources().getQuantityString(R.plurals.family_time_bar_warning,
+                    overlayWarningMinutes, overlayWarningMinutes);
+        }
+        overlayWarningMinutes = 0;
+        return null;
+    }
+
+    private void showEndNoticeIfNeeded(FamilyProfileStore.Snapshot snapshot,
+                                      FamilyMonitorPolicy.Foreground foreground, LocalDate day,
+                                      ZonedDateTime now) {
+        FamilyProfileStore.Profile profile = snapshot.sessionProfile;
+        if (profile == null || profile == FamilyProfileStore.Profile.ADULT) return;
+        FamilyTimePolicy.Profile policyProfile = profile == FamilyProfileStore.Profile.XBOX
+                ? FamilyTimePolicy.Profile.XBOX : FamilyTimePolicy.Profile.CHILD_TV;
+        long used = profile == FamilyProfileStore.Profile.XBOX ? snapshot.xboxUsedMs : snapshot.childUsedMs;
+        long extension = profile == FamilyProfileStore.Profile.XBOX
+                ? snapshot.xboxExtensionMs : snapshot.childExtensionMs;
+        FamilyTimePolicy.Decision decision = FamilyTimePolicy.evaluate(policyProfile, now, used,
+                extension, snapshot.clockUncertain);
+        if (decision.reason != FamilyTimePolicy.Reason.DAILY_LIMIT_REACHED
+                && decision.reason != FamilyTimePolicy.Reason.OUTSIDE_HOURS) return;
+        boolean firstNotice = overlayTerminalNotice == null;
+        boolean xbox = profile == FamilyProfileStore.Profile.XBOX;
+        if (firstNotice) {
+            overlayTerminalNotice = decision.reason == FamilyTimePolicy.Reason.DAILY_LIMIT_REACHED
+                    ? getString(xbox ? R.string.family_time_bar_xbox_ended : R.string.family_time_bar_child_ended)
+                    : getString(R.string.family_outside_hours);
+        }
+        boolean shown = updateTimeBar(snapshot, day,
+                foreground == FamilyMonitorPolicy.Foreground.APP, isScreenOn(), overlayTerminalNotice);
+        if (firstNotice && !shown) Toast.makeText(this, overlayTerminalNotice, Toast.LENGTH_LONG).show();
     }
 
     private boolean readForegroundEvents(FamilyProfileStore.Snapshot snapshot, long now) {

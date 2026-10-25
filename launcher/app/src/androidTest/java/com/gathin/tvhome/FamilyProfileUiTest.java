@@ -1,6 +1,7 @@
 package com.gathin.tvhome;
 
 import static org.junit.Assert.assertFalse;
+import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertNotNull;
 import static org.junit.Assert.assertTrue;
 
@@ -10,7 +11,9 @@ import android.content.Context;
 import android.content.Intent;
 import android.os.SystemClock;
 import android.view.KeyEvent;
+import android.view.Gravity;
 import android.view.View;
+import android.view.WindowManager;
 import android.view.accessibility.AccessibilityNodeInfo;
 
 import androidx.test.ext.junit.runners.AndroidJUnit4;
@@ -65,11 +68,10 @@ public final class FamilyProfileUiTest {
         assertTrue(selector.contains(getString(R.string.family_profile_child)));
         assertTrue(selector.contains(getString(R.string.family_profile_xbox)));
 
-        String firstFocus = focusedText();
+        String firstFocus = awaitFocusedText(null);
         assertNotNull("Profile selector has no focused D-pad option", firstFocus);
         InstrumentationRegistry.getInstrumentation().sendKeyDownUpSync(KeyEvent.KEYCODE_DPAD_DOWN);
-        InstrumentationRegistry.getInstrumentation().waitForIdleSync();
-        String nextFocus = focusedText();
+        String nextFocus = awaitFocusedText(firstFocus);
         assertNotNull("D-pad focus disappeared in the profile selector", nextFocus);
         assertFalse("D-pad down did not move focus", firstFocus.equals(nextFocus));
         InstrumentationRegistry.getInstrumentation().sendKeyDownUpSync(KeyEvent.KEYCODE_BACK);
@@ -89,6 +91,18 @@ public final class FamilyProfileUiTest {
 
         String authDialog = awaitVisibleText(getString(R.string.pin_entry_help));
         assertTrue("Management PIN prompt is missing", authDialog.contains(getString(R.string.family_management)));
+        assertFalse("Overlay settings appeared before parental PIN authentication",
+                authDialog.contains(getString(R.string.family_time_bar_open_settings)));
+    }
+
+    @Test public void timeOverlayWindowCannotTakeDpadOrPointerInput() {
+        WindowManager.LayoutParams params = FamilyTimeOverlay.createLayoutParams(360,
+                WindowManager.LayoutParams.WRAP_CONTENT, FamilyProfileStore.TimeBarCorner.RIGHT);
+        assertEquals(WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY, params.type);
+        assertTrue((params.flags & WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE) != 0);
+        assertTrue((params.flags & WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE) != 0);
+        assertEquals(Gravity.BOTTOM | Gravity.RIGHT, params.gravity);
+        assertEquals(0.75f, params.alpha, 0.001f);
     }
 
     @After public void tearDown() throws Exception {
@@ -115,6 +129,18 @@ public final class FamilyProfileUiTest {
             Thread.sleep(100L);
         } while (SystemClock.uptimeMillis() < deadline);
         throw new AssertionError("Text not visible in active window: " + expected + "\n" + text);
+    }
+
+    private String awaitFocusedText(String differentFrom) throws Exception {
+        long deadline = SystemClock.uptimeMillis() + 5_000L;
+        String text;
+        do {
+            InstrumentationRegistry.getInstrumentation().waitForIdleSync();
+            text = focusedText();
+            if (text != null && (differentFrom == null || !differentFrom.equals(text))) return text;
+            Thread.sleep(100L);
+        } while (SystemClock.uptimeMillis() < deadline);
+        return text;
     }
 
     private String getString(int resource) {

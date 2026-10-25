@@ -33,10 +33,15 @@ final class FamilyProfileStore {
     private static final String SESSION_CURSOR_WALL = "session_cursor_wall_ms";
     private static final String SESSION_QUERY_WALL = "session_query_wall_ms";
     private static final String MUST_RETURN_HOME = "must_return_home";
+    private static final String TIME_BAR_VISIBLE = "time_bar_visible";
+    private static final String TIME_BAR_CORNER = "time_bar_corner";
+    private static final String TIME_BAR_CONTENT = "time_bar_content";
     private static final long CLOCK_TOLERANCE_MS = 2L * 60L * 1000L;
     private static final ZoneId FAMILY_ZONE = ZoneId.of("Europe/Lisbon");
 
     enum Profile { ADULT, CHILD_TV, XBOX }
+    enum TimeBarCorner { LEFT, RIGHT }
+    enum TimeBarContent { BOTH, USED, REMAINING }
 
     static final class Snapshot {
         final boolean enabled;
@@ -56,6 +61,9 @@ final class FamilyProfileStore {
         final long childExtensionMs;
         final long xboxUsedMs;
         final long xboxExtensionMs;
+        final boolean timeBarVisible;
+        final TimeBarCorner timeBarCorner;
+        final TimeBarContent timeBarContent;
 
         private Snapshot(Properties p, LocalDate day) {
             enabled = Boolean.parseBoolean(p.getProperty(ENABLED, "false"));
@@ -80,6 +88,9 @@ final class FamilyProfileStore {
             childExtensionMs = number(p, extensionKey(Profile.CHILD_TV, day), 0L);
             xboxUsedMs = number(p, usageKey(Profile.XBOX, day), 0L);
             xboxExtensionMs = number(p, extensionKey(Profile.XBOX, day), 0L);
+            timeBarVisible = Boolean.parseBoolean(p.getProperty(TIME_BAR_VISIBLE, "true"));
+            timeBarCorner = enumValue(TimeBarCorner.class, p.getProperty(TIME_BAR_CORNER), TimeBarCorner.LEFT);
+            timeBarContent = enumValue(TimeBarContent.class, p.getProperty(TIME_BAR_CONTENT), TimeBarContent.BOTH);
         }
 
         long remainingMs(Profile profile, LocalDate day) {
@@ -128,6 +139,25 @@ final class FamilyProfileStore {
         if (storageError) return false;
         p.setProperty(ENABLED, Boolean.toString(enabled));
         if (!enabled) p.setProperty(MUST_RETURN_HOME, "false");
+        return write(p);
+    }
+
+    synchronized boolean setTimeBarVisible(boolean visible) {
+        return setStringPreference(TIME_BAR_VISIBLE, Boolean.toString(visible));
+    }
+
+    synchronized boolean setTimeBarCorner(TimeBarCorner corner) {
+        return corner != null && setStringPreference(TIME_BAR_CORNER, corner.name());
+    }
+
+    synchronized boolean setTimeBarContent(TimeBarContent content) {
+        return content != null && setStringPreference(TIME_BAR_CONTENT, content.name());
+    }
+
+    private boolean setStringPreference(String key, String value) {
+        Properties p = read();
+        if (storageError) return false;
+        p.setProperty(key, value);
         return write(p);
     }
 
@@ -558,6 +588,9 @@ final class FamilyProfileStore {
 
     private static boolean validState(Properties p) {
         if (!validBoolean(p.getProperty(ENABLED)) || !validBoolean(p.getProperty(CLOCK_UNCERTAIN))
+                || !validBoolean(p.getProperty(TIME_BAR_VISIBLE))
+                || !validEnum(TimeBarCorner.class, p.getProperty(TIME_BAR_CORNER))
+                || !validEnum(TimeBarContent.class, p.getProperty(TIME_BAR_CONTENT))
                 || !validDay(p.getProperty(LAST_DAY))) return false;
         if (!validOptionalNonnegative(p.getProperty(LAST_WALL))
                 || !validOptionalNonnegative(p.getProperty(LAST_ELAPSED))) return false;
@@ -620,5 +653,15 @@ final class FamilyProfileStore {
 
     private static boolean validNonnegative(String value) {
         try { return Long.parseLong(value) >= 0L; } catch (Exception ignored) { return false; }
+    }
+
+    private static <T extends Enum<T>> boolean validEnum(Class<T> type, String value) {
+        if (value == null) return true;
+        try { Enum.valueOf(type, value); return true; } catch (IllegalArgumentException ignored) { return false; }
+    }
+
+    private static <T extends Enum<T>> T enumValue(Class<T> type, String value, T fallback) {
+        if (!validEnum(type, value) || value == null) return fallback;
+        return Enum.valueOf(type, value);
     }
 }

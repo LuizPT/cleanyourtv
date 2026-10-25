@@ -157,4 +157,28 @@
     <string name="family_monitor_notification_title" tools:ignore="MissingTranslation">Family session active</string>
     <string name="family_monitor_notification_text" tools:ignore="MissingTranslation">Monitoring the %1$s profile until Home returns.</string>
     <string name="family_monitor_channel" tools:ignore="MissingTranslation">Family session</string>
+    <string name="family_time_bar_section" tools:ignore="MissingTranslation">Time bar</string>
+    <string name="family_time_bar_help" tools:ignore="MissingTranslation">The bar is a visual aid only. Android requires separate permission to draw over apps. Hiding it never pauses the timer or changes the limits.</string>
+    <string name="family_time_bar_permission_granted" tools:ignore="MissingTranslation">Overlay permission is enabled. The bar can appear over app windows.</string>
+    <string name="family_time_bar_permission_missing" tools:ignore="MissingTranslation">Overlay permission is off. Time is still counted and enforced; the bar will stay hidden.</string>
+    <string name="family_time_bar_open_settings" tools:ignore="MissingTranslation">Open Android overlay settings</string>
+    <string name="family_time_bar_settings_unavailable" tools:ignore="MissingTranslation">Android overlay settings are not available on this TV.</string>
+    <string name="family_time_bar_visible" tools:ignore="MissingTranslation">Show time bar: On</string>
+    <string name="family_time_bar_hidden" tools:ignore="MissingTranslation">Show time bar: Off</string>
+    <string name="family_time_bar_corner_status" tools:ignore="MissingTranslation">Position: %1$s</string>
+    <string name="family_time_bar_corner_left" tools:ignore="MissingTranslation">bottom left</string>
+    <string name="family_time_bar_corner_right" tools:ignore="MissingTranslation">bottom right</string>
+    <string name="family_time_bar_content_status" tools:ignore="MissingTranslation">Show: %1$s</string>
+    <string name="family_time_bar_content_both" tools:ignore="MissingTranslation">used and remaining</string>
+    <string name="family_time_bar_content_used" tools:ignore="MissingTranslation">used time</string>
+    <string name="family_time_bar_content_remaining" tools:ignore="MissingTranslation">remaining time</string>
+    <string name="family_time_bar_title" tools:ignore="MissingTranslation">TIME TODAY</string>
+    <string name="family_time_bar_used" tools:ignore="MissingTranslation">%1$d / %2$d min</string>
+    <string name="family_time_bar_remaining" tools:ignore="MissingTranslation">%1$d min left</string>
+    <string name="family_time_bar_child_ended" tools:ignore="MissingTranslation">Your TV time is over for today.</string>
+    <string name="family_time_bar_xbox_ended" tools:ignore="MissingTranslation">Your game time is over for today.</string>
+    <plurals name="family_time_bar_warning" tools:ignore="MissingTranslation">
+        <item quantity="one">%1$d minute remaining</item>
+        <item quantity="other">%1$d minutes remaining</item>
+    </plurals>
 </resources>
