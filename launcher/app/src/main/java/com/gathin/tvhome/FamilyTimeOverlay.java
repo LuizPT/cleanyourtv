@@ -74,17 +74,22 @@ final class FamilyTimeOverlay {
         }
 
         boolean xbox = profile == FamilyProfileStore.Profile.XBOX;
-        long usedMs = xbox ? snapshot.xboxUsedMs : snapshot.childUsedMs;
-        long remainingMs = snapshot.remainingMs(profile, day);
+        long usedMs = snapshot.sessionDiagnostic ? snapshot.diagnosticUsedMs
+                : xbox ? snapshot.xboxUsedMs : snapshot.childUsedMs;
+        long remainingMs = snapshot.sessionDiagnostic ? snapshot.diagnosticRemainingMs()
+                : snapshot.remainingMs(profile, day);
         long extraMs = xbox ? snapshot.xboxExtensionMs : snapshot.childExtensionMs;
         FamilyTimePolicy.Profile policyProfile = xbox
                 ? FamilyTimePolicy.Profile.XBOX : FamilyTimePolicy.Profile.CHILD_TV;
-        long standardMs = FamilyTimePolicy.dailyBudgetMs(policyProfile, day.getDayOfWeek());
+        long standardMs = snapshot.sessionDiagnostic ? snapshot.diagnosticLimitMs
+                : xbox ? snapshot.xboxSchedule.budgetMs : snapshot.childSchedule.budgetMs;
         long totalMs = standardMs > Long.MAX_VALUE - extraMs ? Long.MAX_VALUE : standardMs + extraMs;
+        if (snapshot.sessionDiagnostic) totalMs = standardMs;
 
         FamilyTimeBarPolicy.Colour colour = FamilyTimeBarPolicy.colourForRemaining(remainingMs);
         int tint = FamilyTimeBarPolicy.argbForRemaining(remainingMs);
-        usedText.setText(context.getString(R.string.family_time_bar_used,
+        usedText.setText(context.getString(snapshot.sessionDiagnostic
+                        ? R.string.family_time_bar_diagnostic_used : R.string.family_time_bar_used,
                 FamilyTimeBarPolicy.displayMinutes(usedMs), FamilyTimeBarPolicy.displayMinutes(totalMs)));
         remainingText.setText(context.getString(R.string.family_time_bar_remaining,
                 FamilyTimeBarPolicy.displayMinutes(remainingMs)));

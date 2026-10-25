@@ -7,6 +7,7 @@ import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.StandardCopyOption;
 import java.time.LocalDate;
+import java.time.DayOfWeek;
 import java.time.ZoneId;
 import java.util.ArrayList;
 import java.util.Collections;
@@ -17,9 +18,12 @@ import java.util.List;
 import java.util.Map;
 import java.util.Properties;
 import java.util.Set;
+import java.util.TreeMap;
 
 /** Private family settings and daily usage. A profile is saved only while a monitored app session is active. */
 final class FamilyProfileStore {
+    // Activity and monitor use distinct store instances; serialize file transactions between them.
+    private static final Object STORAGE_FILE_LOCK = new Object();
     private static final String ENABLED = "family_enabled";
     private static final String XBOX_INPUT = "xbox_input_id";
     private static final String CLOCK_UNCERTAIN = "clock_uncertain";
@@ -37,6 +41,10 @@ final class FamilyProfileStore {
     private static final String SESSION_STARTED_WALL = "session_started_wall_ms";
     private static final String SESSION_CURSOR_WALL = "session_cursor_wall_ms";
     private static final String SESSION_QUERY_WALL = "session_query_wall_ms";
+    private static final String SESSION_DIAGNOSTIC = "session_diagnostic";
+    private static final String SESSION_DIAGNOSTIC_LIMIT = "session_diagnostic_limit_ms";
+    private static final String SESSION_DIAGNOSTIC_USED = "session_diagnostic_used_ms";
+    private static final String SESSION_DIAGNOSTIC_WARNED = "session_diagnostic_warned";
     private static final String MUST_RETURN_HOME = "must_return_home";
     private static final String TIME_BAR_VISIBLE = "time_bar_visible";
     private static final String TIME_BAR_CORNER = "time_bar_corner";
@@ -68,6 +76,11 @@ final class FamilyProfileStore {
         final long childExtensionMs;
         final long xboxUsedMs;
         final long xboxExtensionMs;
+        final boolean sessionDiagnostic;
+        final long diagnosticLimitMs;
+        final long diagnosticUsedMs;
+        final FamilyTimePolicy.Schedule childSchedule;
+        final FamilyTimePolicy.Schedule xboxSchedule;
         final boolean timeBarVisible;
         final TimeBarCorner timeBarCorner;
         final TimeBarContent timeBarContent;
@@ -95,6 +108,11 @@ final class FamilyProfileStore {
             childExtensionMs = number(p, extensionKey(Profile.CHILD_TV, day), 0L);
             xboxUsedMs = number(p, usageKey(Profile.XBOX, day), 0L);
             xboxExtensionMs = number(p, extensionKey(Profile.XBOX, day), 0L);
+            sessionDiagnostic = Boolean.parseBoolean(p.getProperty(SESSION_DIAGNOSTIC, "false"));
+            diagnosticLimitMs = number(p, SESSION_DIAGNOSTIC_LIMIT, 0L);
+            diagnosticUsedMs = number(p, SESSION_DIAGNOSTIC_USED, 0L);
+            childSchedule = schedule(p, Profile.CHILD_TV, day.getDayOfWeek());
+            xboxSchedule = schedule(p, Profile.XBOX, day.getDayOfWeek());
             timeBarVisible = Boolean.parseBoolean(p.getProperty(TIME_BAR_VISIBLE, "true"));
             timeBarCorner = enumValue(TimeBarCorner.class, p.getProperty(TIME_BAR_CORNER), TimeBarCorner.LEFT);
             timeBarContent = enumValue(TimeBarContent.class, p.getProperty(TIME_BAR_CONTENT), TimeBarContent.BOTH);
@@ -102,13 +120,15 @@ final class FamilyProfileStore {
 
         long remainingMs(Profile profile, LocalDate day) {
             if (profile == Profile.ADULT) return Long.MAX_VALUE;
-            long base = profile == Profile.XBOX
-                    ? FamilyTimePolicy.dailyBudgetMs(FamilyTimePolicy.Profile.XBOX, day.getDayOfWeek())
-                    : FamilyTimePolicy.dailyBudgetMs(FamilyTimePolicy.Profile.CHILD_TV, day.getDayOfWeek());
+            long base = (profile == Profile.XBOX ? xboxSchedule : childSchedule).budgetMs;
             long extra = profile == Profile.XBOX ? xboxExtensionMs : childExtensionMs;
             long used = profile == Profile.XBOX ? xboxUsedMs : childUsedMs;
             long budget = base > Long.MAX_VALUE - extra ? Long.MAX_VALUE : base + extra;
             return Math.max(0L, budget - Math.min(budget, used));
+        }
+
+        long diagnosticRemainingMs() {
+            return Math.max(0L, diagnosticLimitMs - Math.min(diagnosticLimitMs, diagnosticUsedMs));
         }
     }
 
@@ -116,11 +136,13 @@ final class FamilyProfileStore {
         final long remainingMs;
         final List<Integer> warningsMinutes;
         final boolean saved;
+        final boolean diagnostic;
 
-        private UsageUpdate(long remainingMs, List<Integer> warningsMinutes, boolean saved) {
+        private UsageUpdate(long remainingMs, List<Integer> warningsMinutes, boolean saved, boolean diagnostic) {
             this.remainingMs = remainingMs;
             this.warningsMinutes = Collections.unmodifiableList(warningsMinutes);
             this.saved = saved;
+            this.diagnostic = diagnostic;
         }
     }
 
@@ -142,11 +164,13 @@ final class FamilyProfileStore {
     }
 
     synchronized boolean setEnabled(boolean enabled) {
+        synchronized (STORAGE_FILE_LOCK) {
         Properties p = read();
         if (storageError) return false;
         p.setProperty(ENABLED, Boolean.toString(enabled));
         if (!enabled) p.setProperty(MUST_RETURN_HOME, "false");
         return write(p);
+        }
     }
 
     synchronized boolean setTimeBarVisible(boolean visible) {
@@ -162,10 +186,12 @@ final class FamilyProfileStore {
     }
 
     private boolean setStringPreference(String key, String value) {
+        synchronized (STORAGE_FILE_LOCK) {
         Properties p = read();
         if (storageError) return false;
         p.setProperty(key, value);
         return write(p);
+        }
     }
 
     synchronized Snapshot snapshot(LocalDate day) {
@@ -178,12 +204,14 @@ final class FamilyProfileStore {
     }
 
     synchronized boolean setXboxInputId(String inputId) {
+        synchronized (STORAGE_FILE_LOCK) {
         Properties p = read();
         if (storageError || inputId == null || inputId.length() > 512) return false;
         String clean = inputId.trim();
         if (clean.isEmpty()) p.remove(XBOX_INPUT);
         else p.setProperty(XBOX_INPUT, clean);
         return write(p);
+        }
     }
 
     /** Captures the apps currently visible in the launcher once, leaving later installs unapproved. */
@@ -194,6 +222,7 @@ final class FamilyProfileStore {
     }
 
     synchronized boolean initializeChildApps(Map<String, Long> visiblePackages) {
+        synchronized (STORAGE_FILE_LOCK) {
         Properties p = read();
         if (storageError) return false;
         if (Boolean.parseBoolean(p.getProperty(CHILD_APPS_INITIALIZED, "false"))) return true;
@@ -208,6 +237,7 @@ final class FamilyProfileStore {
         p.setProperty(CHILD_APPS, joinChildApprovals(valid));
         p.setProperty(CHILD_APPS_INITIALIZED, "true");
         return write(p);
+        }
     }
 
     synchronized boolean childAppsInitialized() {
@@ -243,6 +273,7 @@ final class FamilyProfileStore {
     }
 
     synchronized boolean setChildAppAllowed(String packageName, long firstInstallTime, boolean allowed) {
+        synchronized (STORAGE_FILE_LOCK) {
         if (!validPackageName(packageName)) return false;
         if (firstInstallTime < 0L) return false;
         Properties p = read();
@@ -256,10 +287,12 @@ final class FamilyProfileStore {
         if (!changed) return true;
         p.setProperty(CHILD_APPS, joinChildApprovals(packages));
         return write(p);
+        }
     }
 
     /** A full uninstall revokes approval; package updates retain it. */
     synchronized boolean removeChildAppApproval(String packageName) {
+        synchronized (STORAGE_FILE_LOCK) {
         if (!validPackageName(packageName)) return false;
         Properties p = read();
         if (storageError || !Boolean.parseBoolean(p.getProperty(CHILD_APPS_INITIALIZED, "false"))) return !storageError;
@@ -267,9 +300,11 @@ final class FamilyProfileStore {
         if (packages.remove(packageName) == null) return true;
         p.setProperty(CHILD_APPS, joinChildApprovals(packages));
         return write(p);
+        }
     }
 
     synchronized boolean addExtension(Profile profile, LocalDate day, int minutes) {
+        synchronized (STORAGE_FILE_LOCK) {
         if (profile == null || day == null || minutes < 1 || minutes > 120) return false;
         Properties p = read();
         if (storageError) return false;
@@ -278,18 +313,65 @@ final class FamilyProfileStore {
         long addition = minutes * FamilyTimePolicy.MINUTE_MS;
         p.setProperty(key, Long.toString(saturatedAdd(current, addition)));
         return write(p);
+        }
+    }
+
+    /** Persists a weekday override; invalid or overnight windows are rejected without mutation. */
+    synchronized boolean setSchedule(Profile profile, DayOfWeek day, int startMinute,
+                                     int endMinute, int limitMinutes) {
+        synchronized (STORAGE_FILE_LOCK) {
+        if (profile == null || profile == Profile.ADULT || day == null
+                || startMinute < 0 || startMinute >= 24 * 60
+                || endMinute <= startMinute || endMinute > 24 * 60
+                || limitMinutes < 15 || limitMinutes > 480) return false;
+        Properties p = read();
+        if (storageError) return false;
+        FamilyTimePolicy.Schedule defaults = FamilyTimePolicy.defaultSchedule(
+                policyProfile(profile), day);
+        String prefix = schedulePrefix(profile, day);
+        if (startMinute == defaults.startMinute && endMinute == defaults.endMinute
+                && limitMinutes * FamilyTimePolicy.MINUTE_MS == defaults.budgetMs) {
+            p.remove(prefix + "start");
+            p.remove(prefix + "end");
+            p.remove(prefix + "limit");
+        } else {
+            p.setProperty(prefix + "start", Integer.toString(startMinute));
+            p.setProperty(prefix + "end", Integer.toString(endMinute));
+            p.setProperty(prefix + "limit", Integer.toString(limitMinutes));
+        }
+        return write(p);
+        }
+    }
+
+    /** Reads seven local days from the one private properties snapshot. */
+    synchronized Map<LocalDate, Long> usageHistory(Profile profile, LocalDate throughDay, int dayCount) {
+        if (profile == null || profile == Profile.ADULT || throughDay == null || dayCount < 1 || dayCount > 31) {
+            return Collections.emptyMap();
+        }
+        Properties p = read();
+        if (storageError) return Collections.emptyMap();
+        Map<LocalDate, Long> result = new TreeMap<>();
+        LocalDate firstDay = throughDay.minusDays(dayCount - 1L);
+        for (int i = 0; i < dayCount; i++) {
+            LocalDate day = firstDay.plusDays(i);
+            result.put(day, number(p, usageKey(profile, day), 0L));
+        }
+        return Collections.unmodifiableMap(result);
     }
 
     synchronized boolean observeClock(long wallMillis, long elapsedMillis, LocalDate day) {
+        synchronized (STORAGE_FILE_LOCK) {
         if (day == null) return false;
         Properties p = read();
         if (storageError) return false;
         observeClock(p, wallMillis, elapsedMillis, day);
         return write(p) && !Boolean.parseBoolean(p.getProperty(CLOCK_UNCERTAIN, "false"));
+        }
     }
 
     /** Adult authenticated this adjustment. Usage records remain intact. */
     synchronized boolean confirmClock(long wallMillis, long elapsedMillis, LocalDate day) {
+        synchronized (STORAGE_FILE_LOCK) {
         if (day == null) return false;
         Properties p = read();
         if (storageError) return false;
@@ -299,6 +381,7 @@ final class FamilyProfileStore {
         p.setProperty(LAST_DAY, day.toString());
         p.setProperty(MUST_RETURN_HOME, "false");
         return write(p);
+        }
     }
 
     synchronized boolean startSession(Profile profile, LocalDate day, long wallMillis,
@@ -308,6 +391,21 @@ final class FamilyProfileStore {
 
     synchronized boolean startSession(Profile profile, String targetPackage, LocalDate day, long wallMillis,
                                       long elapsedMillis, long uptimeMillis, boolean screenOn) {
+        return startSessionInternal(profile, targetPackage, 0, day, wallMillis, elapsedMillis, uptimeMillis, screenOn);
+    }
+
+    synchronized boolean startDiagnosticSession(Profile profile, String targetPackage, int minutes,
+                                                LocalDate day, long wallMillis, long elapsedMillis,
+                                                long uptimeMillis, boolean screenOn) {
+        if (profile == null || profile == Profile.ADULT || (minutes != 2 && minutes != 5)) return false;
+        return startSessionInternal(profile, targetPackage, minutes, day, wallMillis, elapsedMillis,
+                uptimeMillis, screenOn);
+    }
+
+    private boolean startSessionInternal(Profile profile, String targetPackage, int diagnosticMinutes,
+                                         LocalDate day, long wallMillis, long elapsedMillis,
+                                         long uptimeMillis, boolean screenOn) {
+        synchronized (STORAGE_FILE_LOCK) {
         if (profile == null || day == null) return false;
         String target = targetPackage == null ? "" : targetPackage.trim();
         if (target.length() > 512) return false;
@@ -330,11 +428,21 @@ final class FamilyProfileStore {
         p.setProperty(SESSION_CURSOR_WALL, Long.toString(wallMillis));
         p.setProperty(SESSION_QUERY_WALL, Long.toString(wallMillis));
         p.setProperty(MUST_RETURN_HOME, "false");
+        if (diagnosticMinutes > 0) {
+            p.setProperty(SESSION_DIAGNOSTIC, "true");
+            p.setProperty(SESSION_DIAGNOSTIC_LIMIT,
+                    Long.toString(diagnosticMinutes * FamilyTimePolicy.MINUTE_MS));
+            p.setProperty(SESSION_DIAGNOSTIC_USED, "0");
+            p.setProperty(SESSION_DIAGNOSTIC_WARNED, "0");
+        }
         return write(p);
+        }
     }
 
     synchronized boolean hasPendingSession() {
-        return read().getProperty(SESSION_PROFILE) != null;
+        synchronized (STORAGE_FILE_LOCK) {
+            return read().getProperty(SESSION_PROFILE) != null;
+        }
     }
 
     synchronized UsageUpdate recordSession(LocalDate day, long wallMillis, long elapsedMillis,
@@ -355,24 +463,30 @@ final class FamilyProfileStore {
     }
 
     synchronized boolean setMonitorCursorWall(long wallMillis) {
+        synchronized (STORAGE_FILE_LOCK) {
         Properties p = read();
         if (storageError || p.getProperty(SESSION_PROFILE) == null || wallMillis < 0L) return false;
         p.setProperty(SESSION_QUERY_WALL, Long.toString(wallMillis));
         return write(p);
+        }
     }
 
     synchronized boolean markReturnHomeOnWake() {
+        synchronized (STORAGE_FILE_LOCK) {
         Properties p = read();
         if (storageError) return false;
         p.setProperty(MUST_RETURN_HOME, "true");
         return write(p);
+        }
     }
 
     synchronized boolean clearReturnHomeOnWake() {
+        synchronized (STORAGE_FILE_LOCK) {
         Properties p = read();
         if (storageError) return false;
         p.setProperty(MUST_RETURN_HOME, "false");
         return write(p);
+        }
     }
 
     /**
@@ -381,6 +495,7 @@ final class FamilyProfileStore {
      */
     synchronized boolean recoverStorageAfterAdultAuthentication(long wallMillis, long elapsedMillis,
                                                                  LocalDate day) {
+        synchronized (STORAGE_FILE_LOCK) {
         if (file == null || day == null) return false;
         if (file.exists()) {
             if (!file.isFile()) {
@@ -405,6 +520,7 @@ final class FamilyProfileStore {
         recovered.setProperty(LAST_ELAPSED, Long.toString(elapsedMillis));
         recovered.setProperty(LAST_DAY, day.toString());
         return write(recovered);
+        }
     }
 
     synchronized UsageUpdate finishSession(LocalDate day, long wallMillis, long elapsedMillis,
@@ -421,6 +537,7 @@ final class FamilyProfileStore {
     private UsageUpdate recordSession(LocalDate day, long wallMillis, long elapsedMillis,
                                       long uptimeMillis, Boolean newScreenState,
                                       Boolean newForeground, String newForegroundPackage, boolean finish) {
+        synchronized (STORAGE_FILE_LOCK) {
         if (day == null) return failedUpdate();
         Properties p = read();
         if (storageError) return failedUpdate();
@@ -428,7 +545,7 @@ final class FamilyProfileStore {
         if (profileValue == null) {
             observeClock(p, wallMillis, elapsedMillis, day);
             boolean saved = write(p);
-            return new UsageUpdate(0L, new ArrayList<>(), saved);
+            return new UsageUpdate(0L, new ArrayList<>(), saved, false);
         }
 
         Profile profile;
@@ -437,7 +554,7 @@ final class FamilyProfileStore {
         } catch (IllegalArgumentException corruptState) {
             p.setProperty(CLOCK_UNCERTAIN, "true");
             clearSession(p);
-            return new UsageUpdate(0L, new ArrayList<>(), write(p));
+            return new UsageUpdate(0L, new ArrayList<>(), write(p), false);
         }
         observeClock(p, wallMillis, elapsedMillis, day);
         long previousElapsed = number(p, SESSION_ELAPSED, elapsedMillis);
@@ -445,6 +562,7 @@ final class FamilyProfileStore {
         long previousWall = number(p, SESSION_CURSOR_WALL, wallMillis);
         boolean wasScreenOn = Boolean.parseBoolean(p.getProperty(SESSION_SCREEN_ON, "false"));
         boolean wasForeground = Boolean.parseBoolean(p.getProperty(SESSION_FOREGROUND, "false"));
+        boolean diagnostic = Boolean.parseBoolean(p.getProperty(SESSION_DIAGNOSTIC, "false"));
         if (elapsedMillis < previousElapsed || uptimeMillis < previousUptime) {
             // A reboot during a running app makes the missing interval unknowable offline.
             p.setProperty(CLOCK_UNCERTAIN, "true");
@@ -459,12 +577,15 @@ final class FamilyProfileStore {
         long activeDelta = wasScreenOn && wasForeground ? Math.min(elapsedDelta, uptimeDelta) : 0L;
         List<Integer> warnings = new ArrayList<>();
         if (activeDelta > 0L && profile != Profile.ADULT) {
-            recordAcrossDays(p, profile, previousWall, activeDelta, warnings);
+            if (diagnostic) recordDiagnosticUse(p, activeDelta, warnings);
+            else recordAcrossDays(p, profile, previousWall, activeDelta, warnings);
         }
         p.setProperty(SESSION_DAY, day.toString());
         p.setProperty(SESSION_ELAPSED, Long.toString(elapsedMillis));
         p.setProperty(SESSION_UPTIME, Long.toString(uptimeMillis));
         p.setProperty(SESSION_CURSOR_WALL, Long.toString(wallMillis));
+        // Commit the UsageEvents query cursor with the same atomic write as the session tick.
+        p.setProperty(SESSION_QUERY_WALL, Long.toString(wallMillis));
         if (newScreenState != null) p.setProperty(SESSION_SCREEN_ON, Boolean.toString(newScreenState));
         if (newForeground != null) p.setProperty(SESSION_FOREGROUND, Boolean.toString(newForeground));
         if (newForegroundPackage != null) {
@@ -475,8 +596,32 @@ final class FamilyProfileStore {
         }
         if (finish) clearSession(p);
         boolean saved = write(p);
-        long after = profile == Profile.ADULT ? Long.MAX_VALUE : remaining(p, profile, day);
-        return new UsageUpdate(after, warnings, saved);
+        long after = profile == Profile.ADULT ? Long.MAX_VALUE
+                : diagnostic ? diagnosticRemaining(p) : remaining(p, profile, day);
+        return new UsageUpdate(after, warnings, saved, diagnostic);
+        }
+    }
+
+    private static void recordDiagnosticUse(Properties p, long activeDelta, List<Integer> warnings) {
+        long limit = number(p, SESSION_DIAGNOSTIC_LIMIT, 0L);
+        long oldUsed = number(p, SESSION_DIAGNOSTIC_USED, 0L);
+        long oldRemaining = Math.max(0L, limit - Math.min(limit, oldUsed));
+        long newUsed = saturatedAdd(oldUsed, activeDelta);
+        p.setProperty(SESSION_DIAGNOSTIC_USED, Long.toString(newUsed));
+        long newRemaining = Math.max(0L, limit - Math.min(limit, newUsed));
+        long warned = number(p, SESSION_DIAGNOSTIC_WARNED, 0L);
+        long oneMinute = FamilyTimePolicy.MINUTE_MS;
+        if ((warned & 1L) == 0L && oldRemaining > oneMinute && newRemaining <= oneMinute) {
+            warnings.add(1);
+            warned |= 1L;
+        }
+        p.setProperty(SESSION_DIAGNOSTIC_WARNED, Long.toString(warned));
+    }
+
+    private static long diagnosticRemaining(Properties p) {
+        long limit = number(p, SESSION_DIAGNOSTIC_LIMIT, 0L);
+        long used = number(p, SESSION_DIAGNOSTIC_USED, 0L);
+        return Math.max(0L, limit - Math.min(limit, used));
     }
 
     /** Splits a monitored interval at each Europe/Lisbon civil midnight. */
@@ -504,6 +649,7 @@ final class FamilyProfileStore {
 
     /** Clear an interrupted session. If it was active, require an adult to review the clock. */
     synchronized boolean recoverInterruptedSession(long wallMillis, long elapsedMillis, LocalDate day) {
+        synchronized (STORAGE_FILE_LOCK) {
         if (day == null) return false;
         Properties p = read();
         if (storageError) return false;
@@ -518,6 +664,7 @@ final class FamilyProfileStore {
         }
         observeClock(p, wallMillis, elapsedMillis, day);
         return write(p);
+        }
     }
 
     private void observeClock(Properties p, long wallMillis, long elapsedMillis, LocalDate day) {
@@ -547,9 +694,7 @@ final class FamilyProfileStore {
 
     private static long remaining(Properties p, Profile profile, LocalDate day) {
         if (profile == Profile.ADULT) return Long.MAX_VALUE;
-        long base = FamilyTimePolicy.dailyBudgetMs(
-                profile == Profile.XBOX ? FamilyTimePolicy.Profile.XBOX : FamilyTimePolicy.Profile.CHILD_TV,
-                day.getDayOfWeek());
+        long base = schedule(p, profile, day.getDayOfWeek()).budgetMs;
         long extra = number(p, extensionKey(profile, day), 0L);
         long budget = saturatedAdd(base, extra);
         return Math.max(0L, budget - Math.min(budget, number(p, usageKey(profile, day), 0L)));
@@ -581,6 +726,26 @@ final class FamilyProfileStore {
 
     private static String extensionKey(Profile profile, LocalDate day) {
         return "extra." + profile.name().toLowerCase(java.util.Locale.ROOT) + "." + day;
+    }
+
+    private static FamilyTimePolicy.Profile policyProfile(Profile profile) {
+        return profile == Profile.XBOX ? FamilyTimePolicy.Profile.XBOX : FamilyTimePolicy.Profile.CHILD_TV;
+    }
+
+    private static String schedulePrefix(Profile profile, DayOfWeek day) {
+        return "schedule." + profile.name().toLowerCase(java.util.Locale.ROOT) + "." + day.name() + ".";
+    }
+
+    private static FamilyTimePolicy.Schedule schedule(Properties p, Profile profile, DayOfWeek day) {
+        FamilyTimePolicy.Schedule defaults = FamilyTimePolicy.defaultSchedule(policyProfile(profile), day);
+        if (profile == Profile.ADULT) return defaults;
+        String prefix = schedulePrefix(profile, day);
+        int start = (int) number(p, prefix + "start", defaults.startMinute);
+        int end = (int) number(p, prefix + "end", defaults.endMinute);
+        long budget = number(p, prefix + "limit", defaults.budgetMs / FamilyTimePolicy.MINUTE_MS)
+                * FamilyTimePolicy.MINUTE_MS;
+        try { return new FamilyTimePolicy.Schedule(start, end, budget); }
+        catch (IllegalArgumentException invalid) { return defaults; }
     }
 
     private static String joinChildApprovals(Map<String, Long> packages) {
@@ -650,13 +815,18 @@ final class FamilyProfileStore {
         p.remove(SESSION_STARTED_WALL);
         p.remove(SESSION_CURSOR_WALL);
         p.remove(SESSION_QUERY_WALL);
+        p.remove(SESSION_DIAGNOSTIC);
+        p.remove(SESSION_DIAGNOSTIC_LIMIT);
+        p.remove(SESSION_DIAGNOSTIC_USED);
+        p.remove(SESSION_DIAGNOSTIC_WARNED);
     }
 
     private static UsageUpdate failedUpdate() {
-        return new UsageUpdate(0L, new ArrayList<>(), false);
+        return new UsageUpdate(0L, new ArrayList<>(), false, false);
     }
 
     private Properties read() {
+        synchronized (STORAGE_FILE_LOCK) {
         Properties p = new Properties();
         storageError = false;
         if (file == null) {
@@ -679,9 +849,11 @@ final class FamilyProfileStore {
         if (!validState(p)) storageError = true;
         else if (migrated && !write(p)) storageError = true;
         return p;
+        }
     }
 
     private boolean write(Properties p) {
+        synchronized (STORAGE_FILE_LOCK) {
         if (file == null) return false;
         File parent = file.getParentFile();
         if (parent != null && !parent.isDirectory() && !parent.mkdirs()) {
@@ -710,6 +882,7 @@ final class FamilyProfileStore {
             temp.delete();
             storageError = true;
             return false;
+        }
         }
     }
 
@@ -752,6 +925,8 @@ final class FamilyProfileStore {
                 long value;
                 try { value = Long.parseLong(p.getProperty(key)); } catch (Exception ignored) { return false; }
                 if (value < 0L || value > 7L) return false;
+            } else if (key.startsWith("schedule.") && !validScheduleProperty(p, key)) {
+                return false;
             }
         }
         String session = p.getProperty(SESSION_PROFILE);
@@ -766,16 +941,61 @@ final class FamilyProfileStore {
                     || !validNonnegative(p.getProperty(SESSION_CURSOR_WALL))
                     || !validNonnegative(p.getProperty(SESSION_QUERY_WALL))
                     || p.getProperty(SESSION_PACKAGE, "").length() > 512) return false;
+            boolean diagnostic = Boolean.parseBoolean(p.getProperty(SESSION_DIAGNOSTIC, "false"));
+            if (diagnostic) {
+                long limit = number(p, SESSION_DIAGNOSTIC_LIMIT, -1L);
+                if (Profile.ADULT.name().equals(session) || (limit != 2L * FamilyTimePolicy.MINUTE_MS
+                        && limit != 5L * FamilyTimePolicy.MINUTE_MS)
+                        || !validNonnegative(p.getProperty(SESSION_DIAGNOSTIC_USED))
+                        || !validNonnegative(p.getProperty(SESSION_DIAGNOSTIC_WARNED))
+                        || number(p, SESSION_DIAGNOSTIC_WARNED, Long.MAX_VALUE) > 1L) return false;
+            } else if (p.getProperty(SESSION_DIAGNOSTIC_LIMIT) != null
+                    || p.getProperty(SESSION_DIAGNOSTIC_USED) != null
+                    || p.getProperty(SESSION_DIAGNOSTIC_WARNED) != null) return false;
         } else if (p.getProperty(SESSION_DAY) != null || p.getProperty(SESSION_ELAPSED) != null
                 || p.getProperty(SESSION_UPTIME) != null || p.getProperty(SESSION_SCREEN_ON) != null
                 || p.getProperty(SESSION_FOREGROUND) != null || p.getProperty(SESSION_PACKAGE) != null
                 || p.getProperty(SESSION_PACKAGE_OBSERVED) != null
                 || p.getProperty(SESSION_STARTED_WALL) != null || p.getProperty(SESSION_CURSOR_WALL) != null
-                || p.getProperty(SESSION_QUERY_WALL) != null) {
+                || p.getProperty(SESSION_QUERY_WALL) != null || p.getProperty(SESSION_DIAGNOSTIC) != null
+                || p.getProperty(SESSION_DIAGNOSTIC_LIMIT) != null
+                || p.getProperty(SESSION_DIAGNOSTIC_USED) != null
+                || p.getProperty(SESSION_DIAGNOSTIC_WARNED) != null) {
             return false;
         }
         if (!validBoolean(p.getProperty(MUST_RETURN_HOME))) return false;
+        if (!validBoolean(p.getProperty(SESSION_DIAGNOSTIC))) return false;
         return true;
+    }
+
+    private static boolean validScheduleProperty(Properties p, String key) {
+        String[] parts = key.split("\\.", -1);
+        if (parts.length != 4 || !"schedule".equals(parts[0])) return false;
+        Profile profile;
+        DayOfWeek day;
+        try {
+            profile = Profile.valueOf(parts[1].toUpperCase(java.util.Locale.ROOT));
+            day = DayOfWeek.valueOf(parts[2]);
+        } catch (IllegalArgumentException invalidName) {
+            return false;
+        }
+        if (profile == Profile.ADULT) return false;
+        String prefix = schedulePrefix(profile, day);
+        String startText = p.getProperty(prefix + "start");
+        String endText = p.getProperty(prefix + "end");
+        String limitText = p.getProperty(prefix + "limit");
+        if (startText == null || endText == null || limitText == null
+                || !("start".equals(parts[3]) || "end".equals(parts[3]) || "limit".equals(parts[3]))) return false;
+        int start, end, limit;
+        try {
+            start = Integer.parseInt(startText);
+            end = Integer.parseInt(endText);
+            limit = Integer.parseInt(limitText);
+        } catch (NumberFormatException invalidNumber) {
+            return false;
+        }
+        return start >= 0 && start < 24 * 60 && end > start && end <= 24 * 60
+                && limit >= 15 && limit <= 480;
     }
 
     /** Old experimental builds only tracked launcher-opened child sessions and lack monitor cursors. */

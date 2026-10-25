@@ -158,6 +158,30 @@ public final class FamilyProfileUiTest {
                 authDialog.contains(getString(R.string.family_time_bar_open_settings)));
     }
 
+    @Test public void authenticatedManagementExposesDiagnosticsStatisticsAndSchedules() throws Exception {
+        launchMainActivity();
+        awaitVisibleText(getString(R.string.family_select_profile));
+        clickView(R.id.familyManageProfiles);
+        awaitVisibleText(getString(R.string.sequence_entry_help));
+        enterSequence("UDLRUDLRUD");
+        InstrumentationRegistry.getInstrumentation().sendKeyDownUpSync(KeyEvent.KEYCODE_DPAD_CENTER);
+
+        String management = awaitVisibleText(getString(R.string.family_management));
+        assertTrue(management.contains(getString(R.string.family_diagnostic_title)));
+        assertTrue(management.contains(getString(R.string.family_statistics_title)));
+        assertTrue(management.contains(getString(R.string.family_advanced_schedule)));
+        assertTrue(management.contains(getString(R.string.family_protection_limited))
+                || management.contains(getString(R.string.family_protection_ready)));
+
+        scrollActiveWindowToBottom();
+        assertTrue(visibleText().contains(getString(R.string.family_add_time_child)));
+        clickExactText(getString(R.string.family_add_time_child));
+        String extensionChoices = awaitVisibleText(getString(R.string.family_add_time_title));
+        assertTrue(extensionChoices.contains(getString(R.string.family_add_time_15)));
+        assertTrue(extensionChoices.contains(getString(R.string.family_add_time_30)));
+        assertTrue(extensionChoices.contains(getString(R.string.family_add_time_60)));
+    }
+
     @Test public void protectedAppManagementRequiresSequenceBeforeShowingContextActions() throws Exception {
         LauncherState state = new LauncherState(pinFile);
         assertTrue(state.saveProtectedApps(Collections.singleton("com.android.settings")));
@@ -350,6 +374,35 @@ public final class FamilyProfileUiTest {
         throw new AssertionError("No exact visible button with text: " + expected);
     }
 
+    private void scrollActiveWindowToBottom() {
+        AccessibilityNodeInfo root = InstrumentationRegistry.getInstrumentation().getUiAutomation()
+                .getRootInActiveWindow();
+        assertNotNull("Management window should be active", root);
+        AccessibilityNodeInfo scrollable = findScrollableNode(root);
+        root.recycle();
+        assertNotNull("Family management should expose a scrollable list", scrollable);
+        try {
+            for (int i = 0; i < 20; i++) {
+                if (!scrollable.performAction(AccessibilityNodeInfo.ACTION_SCROLL_FORWARD)) break;
+                InstrumentationRegistry.getInstrumentation().waitForIdleSync();
+            }
+        } finally {
+            scrollable.recycle();
+        }
+    }
+
+    private static AccessibilityNodeInfo findScrollableNode(AccessibilityNodeInfo node) {
+        if (node.isScrollable()) return AccessibilityNodeInfo.obtain(node);
+        for (int index = 0; index < node.getChildCount(); index++) {
+            AccessibilityNodeInfo child = node.getChild(index);
+            if (child == null) continue;
+            AccessibilityNodeInfo found = findScrollableNode(child);
+            child.recycle();
+            if (found != null) return found;
+        }
+        return null;
+    }
+
     private boolean hasExactText(String expected) {
         AccessibilityNodeInfo root = InstrumentationRegistry.getInstrumentation().getUiAutomation().getRootInActiveWindow();
         if (root == null) return false;
@@ -386,8 +439,9 @@ public final class FamilyProfileUiTest {
         assertEquals(0.75f, params.alpha, 0.001f);
     }
 
-    @Test public void timeOverlayRespectsTheSpecialPermissionAndAnActiveChildSession() {
+    @Test public void timeOverlayRespectsTheSpecialPermissionAndAnActiveChildSession() throws Exception {
         Context target = InstrumentationRegistry.getInstrumentation().getTargetContext();
+        boolean originalPermission = FamilyTimeOverlay.hasPermission(target);
         FamilyProfileStore overlayStore = new FamilyProfileStore(overlayTestFile);
         ZonedDateTime now = ZonedDateTime.now(ZoneId.of("Europe/Lisbon"));
         long wall = now.toInstant().toEpochMilli();
@@ -399,21 +453,29 @@ public final class FamilyProfileUiTest {
                 elapsed, SystemClock.uptimeMillis()).saved);
 
         FamilyTimeOverlay overlay = new FamilyTimeOverlay(target);
-        boolean permission = FamilyTimeOverlay.hasPermission(target);
         boolean[] attached = new boolean[1];
         try {
+            setOverlayAppOp("ignore");
+            assertFalse("The overlay app-op should be denied in this part of the test",
+                    FamilyTimeOverlay.hasPermission(target));
             InstrumentationRegistry.getInstrumentation().runOnMainSync(() -> attached[0] = overlay.update(
                     overlayStore.snapshot(now.toLocalDate()), now.toLocalDate(), true, true, null));
-            assertEquals("Overlay visibility must follow Android's explicit app-op", permission, attached[0]);
+            assertFalse("Denied overlay permission must prevent attachment", attached[0]);
+
+            setOverlayAppOp("allow");
+            assertTrue("The test must explicitly allow the overlay", FamilyTimeOverlay.hasPermission(target));
+            InstrumentationRegistry.getInstrumentation().runOnMainSync(() -> attached[0] = overlay.update(
+                    overlayStore.snapshot(now.toLocalDate()), now.toLocalDate(), true, true, null));
+            assertTrue("An active session should attach after explicit authorization", attached[0]);
         } finally {
             InstrumentationRegistry.getInstrumentation().runOnMainSync(overlay::hide);
+            setOverlayAppOp(originalPermission ? "allow" : "ignore");
         }
     }
 
     @Test public void compactTimeOverlayShowsOneSummaryAndRefreshesProgress() throws Exception {
         Context target = InstrumentationRegistry.getInstrumentation().getTargetContext();
-        assertTrue("The emulator test requires the overlay app-op to be granted",
-                FamilyTimeOverlay.hasPermission(target));
+        boolean originalPermission = FamilyTimeOverlay.hasPermission(target);
         FamilyProfileStore overlayStore = new FamilyProfileStore(overlayTestFile);
         ZonedDateTime now = ZonedDateTime.now(ZoneId.of("Europe/Lisbon"));
         long wall = now.toInstant().toEpochMilli();
@@ -427,6 +489,9 @@ public final class FamilyProfileUiTest {
 
         FamilyTimeOverlay overlay = new FamilyTimeOverlay(target);
         try {
+            setOverlayAppOp("allow");
+            assertTrue("The emulator test requires the overlay app-op to be granted",
+                    FamilyTimeOverlay.hasPermission(target));
             boolean[] attached = new boolean[1];
             InstrumentationRegistry.getInstrumentation().runOnMainSync(() -> attached[0] = overlay.update(
                     overlayStore.snapshot(now.toLocalDate()), now.toLocalDate(), true, true, null));
@@ -462,8 +527,37 @@ public final class FamilyProfileUiTest {
             assertFalse("Displayed used time should refresh",
                     beforeSummary.toString().equals(used.getText().toString()));
             assertTrue("Progress should advance after five minutes", intField(progressTrack, "progress") > before);
+
+            long diagnosticStartWall = wall + fiveMinutes;
+            long diagnosticStartElapsed = elapsed + fiveMinutes;
+            long diagnosticStartUptime = uptime + fiveMinutes;
+            assertTrue(overlayStore.finishSession(now.toLocalDate(), diagnosticStartWall,
+                    diagnosticStartElapsed, diagnosticStartUptime).saved);
+            assertTrue(overlayStore.startDiagnosticSession(FamilyProfileStore.Profile.CHILD_TV,
+                    "test.tv.app", 2, now.toLocalDate(), diagnosticStartWall,
+                    diagnosticStartElapsed, diagnosticStartUptime, true));
+            assertTrue(overlayStore.setSessionForeground(true, "test.tv.app", now.toLocalDate(),
+                    diagnosticStartWall, diagnosticStartElapsed, diagnosticStartUptime).saved);
+            FamilyProfileStore.Snapshot diagnosticStart = overlayStore.snapshot(now.toLocalDate());
+            InstrumentationRegistry.getInstrumentation().runOnMainSync(() -> attached[0] = overlay.update(
+                    diagnosticStart, now.toLocalDate(), true, true, null));
+            assertTrue(attached[0]);
+            assertEquals(target.getString(R.string.family_time_bar_diagnostic_used, 0, 2), used.getText());
+
+            assertTrue(overlayStore.recordSession(now.toLocalDate(),
+                    diagnosticStartWall + FamilyTimePolicy.MINUTE_MS,
+                    diagnosticStartElapsed + FamilyTimePolicy.MINUTE_MS,
+                    diagnosticStartUptime + FamilyTimePolicy.MINUTE_MS).saved);
+            FamilyProfileStore.Snapshot diagnosticProgress = overlayStore.snapshot(now.toLocalDate());
+            InstrumentationRegistry.getInstrumentation().runOnMainSync(() -> attached[0] = overlay.update(
+                    diagnosticProgress, now.toLocalDate(), true, true, null));
+            assertEquals(target.getString(R.string.family_time_bar_diagnostic_used, 1, 2), used.getText());
+            assertEquals(50, intField(progressTrack, "progress"));
+            assertEquals("Diagnostic minutes must not be added to the real daily balance",
+                    fiveMinutes, overlayStore.snapshot(now.toLocalDate()).childUsedMs);
         } finally {
             InstrumentationRegistry.getInstrumentation().runOnMainSync(overlay::hide);
+            setOverlayAppOp(originalPermission ? "allow" : "ignore");
         }
     }
 
@@ -579,6 +673,19 @@ public final class FamilyProfileUiTest {
 
     private String getString(int resource) {
         return InstrumentationRegistry.getInstrumentation().getTargetContext().getString(resource);
+    }
+
+    private static void setOverlayAppOp(String mode) throws IOException {
+        if (!"allow".equals(mode) && !"ignore".equals(mode)) {
+            throw new IllegalArgumentException("Unsupported app-op mode");
+        }
+        Context target = InstrumentationRegistry.getInstrumentation().getTargetContext();
+        String command = "appops set " + target.getPackageName() + " SYSTEM_ALERT_WINDOW " + mode;
+        try (java.io.InputStream output = new android.os.ParcelFileDescriptor.AutoCloseInputStream(
+                InstrumentationRegistry.getInstrumentation().getUiAutomation().executeShellCommand(command))) {
+            byte[] buffer = new byte[256];
+            while (output.read(buffer) != -1) { /* Wait until the shell command has completed. */ }
+        }
     }
 
     private static <T> T field(Object object, String name, Class<T> type) throws Exception {

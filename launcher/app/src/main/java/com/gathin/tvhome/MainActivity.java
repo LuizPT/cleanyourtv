@@ -69,6 +69,8 @@ import java.io.File;
 import java.time.LocalDate;
 import java.time.ZoneId;
 import java.time.ZonedDateTime;
+import java.time.DayOfWeek;
+import java.time.format.DateTimeFormatter;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Calendar;
@@ -76,6 +78,7 @@ import java.util.Collections;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Locale;
+import java.util.Map;
 import java.util.Set;
 
 /**
@@ -107,6 +110,7 @@ public class MainActivity extends Activity implements AppAdapter.TileListener {
     private boolean familyScreenReceiverRegistered;
     private boolean familyLimitNotified;
     private boolean familyLaunchInFlight;
+    private int diagnosticMinutesNextLaunch;
     private boolean configuredHomeSettingsShortcut;
     private long xboxLauncherAttemptStartedMs;
     private List<String> defaultDockOrder = Collections.emptyList();
@@ -659,7 +663,13 @@ public class MainActivity extends Activity implements AppAdapter.TileListener {
 
     @Override
     public void onBackPressed() {
-        // Home screen: Back goes nowhere.
+        if (diagnosticMinutesNextLaunch > 0) {
+            diagnosticMinutesNextLaunch = 0;
+            setActiveFamilyProfile(null);
+            Toast.makeText(this, R.string.family_diagnostic_cancelled, Toast.LENGTH_SHORT).show();
+            maybeShowFamilyProfileSelector();
+        }
+        // At Home, Back otherwise goes nowhere.
     }
 
     // ---- glass highlight -------------------------------------------------------------------------
@@ -1955,6 +1965,9 @@ public class MainActivity extends Activity implements AppAdapter.TileListener {
 
     private void setActiveFamilyProfile(FamilyTimePolicy.Profile profile, boolean refreshApps) {
         if (activeFamilyProfile == profile) return;
+        if (profile == null || profile == FamilyTimePolicy.Profile.ADULT) {
+            diagnosticMinutesNextLaunch = 0;
+        }
         activeFamilyProfile = profile;
         updateFamilyStatus();
         if (refreshApps && adapter != null) reloadApps(false);
@@ -2078,7 +2091,10 @@ public class MainActivity extends Activity implements AppAdapter.TileListener {
                         ? snapshot.xboxUsedMs : snapshot.childUsedMs,
                 activeFamilyProfile == FamilyTimePolicy.Profile.XBOX
                         ? snapshot.xboxExtensionMs : snapshot.childExtensionMs,
-                snapshot.clockUncertain);
+                snapshot.clockUncertain,
+                activeFamilyProfile == FamilyTimePolicy.Profile.XBOX
+                        ? snapshot.xboxSchedule : snapshot.childSchedule,
+                diagnosticMinutesNextLaunch > 0);
         if (decision.allowed) return true;
         showFamilyDecision(decision.reason);
         if (decision.reason == FamilyAccessPolicy.Reason.OUTSIDE_HOURS
@@ -2136,13 +2152,21 @@ public class MainActivity extends Activity implements AppAdapter.TileListener {
                 : activeFamilyProfile == FamilyTimePolicy.Profile.XBOX
                     ? FamilyProfileStore.Profile.XBOX : FamilyProfileStore.Profile.CHILD_TV;
         ZonedDateTime now = familyNow();
-        boolean saved = familyStore.startSession(profile, targetPackage(target), now.toLocalDate(), now.toInstant().toEpochMilli(),
-                SystemClock.elapsedRealtime(), SystemClock.uptimeMillis(), isScreenInteractive());
+        boolean diagnostic = diagnosticMinutesNextLaunch > 0;
+        boolean saved = diagnostic
+                ? familyStore.startDiagnosticSession(profile, targetPackage(target), diagnosticMinutesNextLaunch,
+                        now.toLocalDate(), now.toInstant().toEpochMilli(), SystemClock.elapsedRealtime(),
+                        SystemClock.uptimeMillis(), isScreenInteractive())
+                : familyStore.startSession(profile, targetPackage(target), now.toLocalDate(),
+                        now.toInstant().toEpochMilli(), SystemClock.elapsedRealtime(),
+                        SystemClock.uptimeMillis(), isScreenInteractive());
         if (!saved) {
+            diagnosticMinutesNextLaunch = 0;
             Toast.makeText(this, familyStore.hasStorageError() ? R.string.family_storage_error
                     : R.string.family_session_recovery, Toast.LENGTH_LONG).show();
             return false;
         }
+        diagnosticMinutesNextLaunch = 0;
         trackedFamilyProfile = activeFamilyProfile;
         familyLimitNotified = false;
         try {
@@ -2219,7 +2243,8 @@ public class MainActivity extends Activity implements AppAdapter.TileListener {
                 xbox ? FamilyAccessPolicy.Target.PASSTHROUGH_INPUT : FamilyAccessPolicy.Target.APP,
                 xbox ? snapshot.xboxInputId : null, snapshot.xboxInputId, now,
                 xbox ? snapshot.xboxUsedMs : snapshot.childUsedMs,
-                xbox ? snapshot.xboxExtensionMs : snapshot.childExtensionMs, snapshot.clockUncertain);
+                xbox ? snapshot.xboxExtensionMs : snapshot.childExtensionMs, snapshot.clockUncertain,
+                xbox ? snapshot.xboxSchedule : snapshot.childSchedule, snapshot.sessionDiagnostic);
         if (!decision.allowed) {
             setActiveFamilyProfile(null);
             if (notify) showFamilyDecision(decision.reason);
@@ -2391,7 +2416,7 @@ public class MainActivity extends Activity implements AppAdapter.TileListener {
 
         FamilyAccessPolicy.Decision child = profileChoiceDecision(FamilyTimePolicy.Profile.CHILD_TV, snapshot, today);
         long childRemaining = snapshot.remainingMs(FamilyProfileStore.Profile.CHILD_TV, today);
-        String childStatus = familyProfileStatus(child, childRemaining);
+        String childStatus = familyProfileStatus(child, childRemaining, FamilyTimePolicy.Profile.CHILD_TV);
         View childButton = familyProfileTile(R.id.familyProfileChild, R.string.family_profile_child_short,
                 R.drawable.ic_family_child, 0xFF8057A5, childStatus, child.allowed, () -> {
                     dialog.dismiss();
@@ -2403,7 +2428,7 @@ public class MainActivity extends Activity implements AppAdapter.TileListener {
         boolean hasXboxInput = isConfiguredXboxInput(snapshot.xboxInputId);
         FamilyAccessPolicy.Decision xbox = profileChoiceDecision(FamilyTimePolicy.Profile.XBOX, snapshot, today);
         long xboxRemaining = snapshot.remainingMs(FamilyProfileStore.Profile.XBOX, today);
-        String xboxStatus = hasXboxInput ? familyProfileStatus(xbox, xboxRemaining)
+        String xboxStatus = hasXboxInput ? familyProfileStatus(xbox, xboxRemaining, FamilyTimePolicy.Profile.XBOX)
                 : getString(R.string.family_profile_xbox_configure);
         View xboxButton = familyProfileTile(R.id.familyProfileXbox, R.string.family_profile_xbox_short,
                 R.drawable.ic_family_xbox, 0xFF167A47, xboxStatus, hasXboxInput && xbox.allowed, () -> {
@@ -2570,21 +2595,57 @@ public class MainActivity extends Activity implements AppAdapter.TileListener {
         return tile;
     }
 
-    private String familyProfileStatus(FamilyAccessPolicy.Decision decision, long remainingMs) {
+    private String familyProfileStatus(FamilyAccessPolicy.Decision decision, long remainingMs,
+                                       FamilyTimePolicy.Profile profile) {
+        String status;
         switch (decision.reason) {
             case MONITOR_REQUIRED:
-                return getString(R.string.family_profile_usage_required);
+                status = getString(R.string.family_profile_usage_required);
+                break;
             case SESSION_PENDING:
-                return getString(R.string.family_profile_session_pending);
+                status = getString(R.string.family_profile_session_pending);
+                break;
             case CLOCK_UNCERTAIN:
-                return getString(R.string.family_profile_clock_uncertain);
+                status = getString(R.string.family_profile_clock_uncertain);
+                break;
             case OUTSIDE_HOURS:
-                return getString(R.string.family_profile_outside_hours);
+                status = getString(R.string.family_profile_outside_hours);
+                break;
             case DAILY_LIMIT_REACHED:
-                return getString(R.string.family_profile_time_over);
+                status = getString(R.string.family_profile_time_over);
+                break;
             default:
-                return getString(R.string.family_profile_remaining, durationText(remainingMs));
+                status = getString(R.string.family_profile_remaining, durationText(remainingMs));
+                break;
         }
+        if (decision.reason == FamilyAccessPolicy.Reason.OUTSIDE_HOURS
+                || decision.reason == FamilyAccessPolicy.Reason.DAILY_LIMIT_REACHED) {
+            String next = nextFamilyAvailability(profile, decision.reason);
+            status = getString(R.string.family_profile_status_next, status, next);
+        }
+        return status;
+    }
+
+    private String nextFamilyAvailability(FamilyTimePolicy.Profile profile,
+                                          FamilyAccessPolicy.Reason reason) {
+        ZonedDateTime now = familyNow();
+        LocalDate today = now.toLocalDate();
+        FamilyProfileStore.Snapshot current = familyStore.snapshot(today);
+        FamilyTimePolicy.Schedule currentSchedule = profile == FamilyTimePolicy.Profile.XBOX
+                ? current.xboxSchedule : current.childSchedule;
+        int minute = now.getHour() * 60 + now.getMinute();
+        boolean laterToday = reason == FamilyAccessPolicy.Reason.OUTSIDE_HOURS
+                && minute < currentSchedule.startMinute;
+        LocalDate date = laterToday ? today : today.plusDays(1);
+        FamilyProfileStore.Snapshot nextDay = laterToday ? current : familyStore.snapshot(date);
+        FamilyTimePolicy.Schedule schedule = profile == FamilyTimePolicy.Profile.XBOX
+                ? nextDay.xboxSchedule : nextDay.childSchedule;
+        int start = schedule.startMinute;
+        ZonedDateTime available = date.atStartOfDay(FAMILY_ZONE).plusMinutes(start);
+        String time = android.text.format.DateFormat.getTimeFormat(this)
+                .format(new java.util.Date(available.toInstant().toEpochMilli()));
+        return getString(laterToday ? R.string.family_profile_available_today_at
+                : R.string.family_profile_available_tomorrow_at, time);
     }
 
     private LinearLayout.LayoutParams familyActionLp() {
@@ -2608,7 +2669,8 @@ public class MainActivity extends Activity implements AppAdapter.TileListener {
                 xbox ? FamilyAccessPolicy.Target.PASSTHROUGH_INPUT : FamilyAccessPolicy.Target.APP,
                 xbox ? snapshot.xboxInputId : null, snapshot.xboxInputId, now,
                 xbox ? snapshot.xboxUsedMs : snapshot.childUsedMs,
-                xbox ? snapshot.xboxExtensionMs : snapshot.childExtensionMs, snapshot.clockUncertain);
+                xbox ? snapshot.xboxExtensionMs : snapshot.childExtensionMs, snapshot.clockUncertain,
+                xbox ? snapshot.xboxSchedule : snapshot.childSchedule, false);
     }
 
     private boolean isConfiguredXboxInput(String id) {
@@ -2834,6 +2896,8 @@ public class MainActivity extends Activity implements AppAdapter.TileListener {
         content.addView(familyText(usageAccess ? R.string.family_usage_access_granted
                 : R.string.family_usage_access_missing, 14,
                 usageAccess ? 0xFFB8C3D1 : 0xFFFFD180), familyChoiceLp());
+        content.addView(familyText(familyReliabilityStatus(snapshot, usageAccess), 14,
+                familyReliabilityColor(snapshot, usageAccess)), familyChoiceLp());
         addFamilyManagementAction(content, R.string.family_usage_access_open, this::openFamilyUsageAccessSettings);
         addFamilyManagementAction(content, R.string.sequence_change, this::changeUnlockSequence);
         addFamilyManagementAction(content, R.string.family_child_apps_action, () -> {
@@ -2947,14 +3011,20 @@ public class MainActivity extends Activity implements AppAdapter.TileListener {
                     showFamilyManagementPanel();
                 });
         if (snapshot.enabled) {
+            addFamilyManagementAction(content, R.string.family_diagnostic_title,
+                    () -> showFamilyDiagnostics(dialog));
+            addFamilyManagementAction(content, R.string.family_statistics_title,
+                    () -> { dialog.dismiss(); showFamilyStatistics(); });
+            addFamilyManagementAction(content, R.string.family_advanced_schedule,
+                    () -> { dialog.dismiss(); showFamilyScheduleChooser(); });
             addFamilyManagementAction(content, R.string.family_xbox_input, () -> {
                 dialog.dismiss();
                 showFamilyInputChooser();
             });
             addFamilyManagementAction(content, R.string.family_add_time_child, () ->
-                    addFamilyTime(dialog, FamilyProfileStore.Profile.CHILD_TV, today));
+                    chooseFamilyTimeExtension(dialog, FamilyProfileStore.Profile.CHILD_TV, today));
             addFamilyManagementAction(content, R.string.family_add_time_xbox, () ->
-                    addFamilyTime(dialog, FamilyProfileStore.Profile.XBOX, today));
+                    chooseFamilyTimeExtension(dialog, FamilyProfileStore.Profile.XBOX, today));
         }
         if (snapshot.clockUncertain) addFamilyManagementAction(content, R.string.family_clock_confirm, () -> {
             ZonedDateTime confirmedNow = familyNow();
@@ -3158,14 +3228,290 @@ public class MainActivity extends Activity implements AppAdapter.TileListener {
         }
     }
 
-    private void addFamilyTime(Dialog dialog, FamilyProfileStore.Profile profile, LocalDate day) {
-        if (!familyStore.addExtension(profile, day, 15)) {
+    private String familyReliabilityStatus(FamilyProfileStore.Snapshot snapshot, boolean usageAccess) {
+        if (!snapshot.enabled) return getString(R.string.family_protection_disabled);
+        if (familyStore.hasStorageError()) return getString(R.string.family_protection_storage_error);
+        if (!usageAccess) return getString(R.string.family_protection_limited);
+        if (snapshot.clockUncertain) return getString(R.string.family_protection_clock_review);
+        if (FamilyMonitorPolicy.isSessionStale(snapshot.sessionPending, snapshot.sessionQueryWallMs,
+                System.currentTimeMillis())) return getString(R.string.family_protection_monitor_stale);
+        return getString(R.string.family_protection_ready);
+    }
+
+    private int familyReliabilityColor(FamilyProfileStore.Snapshot snapshot, boolean usageAccess) {
+        return snapshot.enabled && !familyStore.hasStorageError() && usageAccess && !snapshot.clockUncertain
+                && !FamilyMonitorPolicy.isSessionStale(snapshot.sessionPending, snapshot.sessionQueryWallMs,
+                        System.currentTimeMillis())
+                ? 0xFF9FE2BE : 0xFFFFD180;
+    }
+
+    private void chooseFamilyTimeExtension(Dialog parent, FamilyProfileStore.Profile profile, LocalDate day) {
+        Dialog dialog = new Dialog(this);
+        dialog.requestWindowFeature(Window.FEATURE_NO_TITLE);
+        LinearLayout panel = familyPanel();
+        panel.addView(familyText(R.string.family_add_time_title, 20, Color.WHITE));
+        for (int minutes : new int[]{15, 30, 60}) {
+            int label = minutes == 15 ? R.string.family_add_time_15
+                    : minutes == 30 ? R.string.family_add_time_30 : R.string.family_add_time_60;
+            addFamilyManagementAction(panel, label, () -> addFamilyTime(dialog, parent, profile, day, minutes));
+        }
+        addFamilyManagementAction(panel, R.string.cancel, dialog::dismiss);
+        dialog.setContentView(panel);
+        configureFamilyDialog(dialog, 0.68f);
+        dialog.show();
+        sizeFamilyDialog(dialog, 0.46f);
+        if (panel.getChildCount() > 1) panel.getChildAt(1).requestFocus();
+    }
+
+    private void addFamilyTime(Dialog dialog, Dialog parent, FamilyProfileStore.Profile profile,
+                               LocalDate day, int minutes) {
+        if (!familyStore.addExtension(profile, day, minutes)) {
             Toast.makeText(this, R.string.family_storage_error, Toast.LENGTH_LONG).show();
             return;
         }
-        Toast.makeText(this, R.string.family_time_added, Toast.LENGTH_SHORT).show();
         dialog.dismiss();
+        parent.dismiss();
+        Toast.makeText(this, getResources().getQuantityString(R.plurals.family_time_added_minutes,
+                minutes, minutes), Toast.LENGTH_SHORT).show();
         showFamilyManagementPanel();
+    }
+
+    private void showFamilyDiagnostics(Dialog parent) {
+        if (!familyEnabled() || familyStore.hasStorageError() || !FamilyUsageAccess.isGranted(this)) {
+            Toast.makeText(this, R.string.family_diagnostic_unavailable, Toast.LENGTH_LONG).show();
+            return;
+        }
+        Dialog dialog = new Dialog(this);
+        dialog.requestWindowFeature(Window.FEATURE_NO_TITLE);
+        LinearLayout panel = familyPanel();
+        panel.addView(familyText(R.string.family_diagnostic_title, 21, Color.WHITE));
+        TextView help = familyText(R.string.family_diagnostic_help, 14, 0xFFD8DDE5);
+        panel.addView(help, familyChoiceLp());
+        addFamilyManagementAction(panel, R.string.family_diagnostic_child_2, () ->
+                beginDiagnostic(FamilyTimePolicy.Profile.CHILD_TV, 2, dialog, parent));
+        addFamilyManagementAction(panel, R.string.family_diagnostic_child_5, () ->
+                beginDiagnostic(FamilyTimePolicy.Profile.CHILD_TV, 5, dialog, parent));
+        addFamilyManagementAction(panel, R.string.family_diagnostic_xbox_2, () ->
+                beginDiagnostic(FamilyTimePolicy.Profile.XBOX, 2, dialog, parent));
+        addFamilyManagementAction(panel, R.string.family_diagnostic_xbox_5, () ->
+                beginDiagnostic(FamilyTimePolicy.Profile.XBOX, 5, dialog, parent));
+        addFamilyManagementAction(panel, R.string.cancel, dialog::dismiss);
+        dialog.setContentView(panel);
+        configureFamilyDialog(dialog, 0.7f);
+        dialog.show();
+        sizeFamilyDialog(dialog, 0.52f);
+        if (panel.getChildCount() > 2) panel.getChildAt(2).requestFocus();
+    }
+
+    private void beginDiagnostic(FamilyTimePolicy.Profile profile, int minutes, Dialog dialog, Dialog parent) {
+        if (!familyEnabled() || !FamilyUsageAccess.isGranted(this) || familyStore.hasStorageError()) {
+            Toast.makeText(this, R.string.family_diagnostic_unavailable, Toast.LENGTH_LONG).show();
+            return;
+        }
+        if (profile == FamilyTimePolicy.Profile.XBOX) {
+            FamilyProfileStore.Snapshot snapshot = familyStore.snapshot(familyToday());
+            if (!isConfiguredXboxInput(snapshot.xboxInputId)) {
+                Toast.makeText(this, R.string.family_xbox_input_required, Toast.LENGTH_LONG).show();
+                return;
+            }
+            diagnosticMinutesNextLaunch = minutes;
+            setActiveFamilyProfile(profile, false);
+            dialog.dismiss();
+            parent.dismiss();
+            if (!openInput(snapshot.xboxInputId)) {
+                diagnosticMinutesNextLaunch = 0;
+                setActiveFamilyProfile(null);
+                Toast.makeText(this, R.string.family_diagnostic_start_failed, Toast.LENGTH_LONG).show();
+                showFamilyManagementPanel();
+            }
+            return;
+        }
+        diagnosticMinutesNextLaunch = minutes;
+        setActiveFamilyProfile(profile);
+        dialog.dismiss();
+        parent.dismiss();
+        Toast.makeText(this, R.string.family_diagnostic_choose_app, Toast.LENGTH_LONG).show();
+    }
+
+    private void showFamilyStatistics() {
+        LocalDate today = familyToday();
+        Map<LocalDate, Long> child = familyStore.usageHistory(FamilyProfileStore.Profile.CHILD_TV, today, 7);
+        Map<LocalDate, Long> xbox = familyStore.usageHistory(FamilyProfileStore.Profile.XBOX, today, 7);
+        if (familyStore.hasStorageError()) {
+            Toast.makeText(this, R.string.family_storage_error, Toast.LENGTH_LONG).show();
+            return;
+        }
+        Dialog dialog = new Dialog(this);
+        dialog.requestWindowFeature(Window.FEATURE_NO_TITLE);
+        LinearLayout panel = familyPanel();
+        panel.addView(familyText(R.string.family_statistics_title, 21, Color.WHITE));
+        panel.addView(familyText(R.string.family_statistics_local, 13, 0xFFB8C3D1), familyChoiceLp());
+        ScrollView scroll = new ScrollView(this);
+        LinearLayout rows = new LinearLayout(this);
+        rows.setOrientation(LinearLayout.VERTICAL);
+        scroll.addView(rows, new ScrollView.LayoutParams(-1, -2));
+        LinearLayout.LayoutParams scrollLp = new LinearLayout.LayoutParams(-1, 0, 1f);
+        scrollLp.topMargin = dp(8);
+        panel.addView(scroll, scrollLp);
+        DateTimeFormatter labelFormat = DateTimeFormatter.ofPattern("EEE d MMM", Locale.getDefault());
+        for (int offset = 6; offset >= 0; offset--) {
+            LocalDate day = today.minusDays(offset);
+            rows.addView(familyChoice(getString(R.string.family_statistics_day,
+                    day.format(labelFormat), durationText(child.getOrDefault(day, 0L)),
+                    durationText(xbox.getOrDefault(day, 0L))), true, () -> { }), familyChoiceLp());
+        }
+        addFamilyManagementAction(panel, R.string.close, dialog::dismiss);
+        dialog.setContentView(panel);
+        configureFamilyDialog(dialog, 0.68f);
+        dialog.show();
+        sizeFamilyDialog(dialog, 0.6f);
+        if (rows.getChildCount() > 0) rows.getChildAt(0).requestFocus();
+    }
+
+    private void showFamilyScheduleChooser() {
+        showFamilySchedulePage(null);
+    }
+
+    private void showFamilySchedulePage(FamilyProfileStore.Profile profile) {
+        if (familyStore.hasStorageError()) {
+            Toast.makeText(this, R.string.family_storage_error, Toast.LENGTH_LONG).show();
+            return;
+        }
+        Dialog dialog = new Dialog(this);
+        dialog.requestWindowFeature(Window.FEATURE_NO_TITLE);
+        LinearLayout panel = familyPanel();
+        View initialFocus = null;
+        panel.addView(familyText(profile == null ? R.string.family_advanced_schedule
+                : profile == FamilyProfileStore.Profile.CHILD_TV ? R.string.family_profile_child
+                : R.string.family_profile_xbox, 21, Color.WHITE));
+        if (profile == null) {
+            addFamilyManagementAction(panel, R.string.family_profile_child, () -> {
+                dialog.dismiss(); showFamilySchedulePage(FamilyProfileStore.Profile.CHILD_TV);
+            });
+            initialFocus = panel.getChildAt(panel.getChildCount() - 1);
+            addFamilyManagementAction(panel, R.string.family_profile_xbox, () -> {
+                dialog.dismiss(); showFamilySchedulePage(FamilyProfileStore.Profile.XBOX);
+            });
+        } else {
+            TextView help = familyText(R.string.family_schedule_help, 13, 0xFFD8DDE5);
+            panel.addView(help, familyChoiceLp());
+            ScrollView scroll = new ScrollView(this);
+            LinearLayout rows = new LinearLayout(this);
+            rows.setOrientation(LinearLayout.VERTICAL);
+            scroll.addView(rows, new ScrollView.LayoutParams(-1, -2));
+            panel.addView(scroll, new LinearLayout.LayoutParams(-1, 0, 1f));
+            View firstRow = null;
+            for (DayOfWeek day : DayOfWeek.values()) {
+                FamilyProfileStore.Snapshot snapshot = familyStore.snapshot(LocalDate.now(FAMILY_ZONE)
+                        .with(java.time.temporal.TemporalAdjusters.nextOrSame(day)));
+                FamilyTimePolicy.Schedule schedule = profile == FamilyProfileStore.Profile.XBOX
+                        ? snapshot.xboxSchedule : snapshot.childSchedule;
+                String label = day.getDisplayName(java.time.format.TextStyle.FULL, Locale.getDefault());
+                TextView row = familyChoice(scheduleLabel(label, schedule), true,
+                        () -> editFamilySchedule(profile, day));
+                rows.addView(row, familyChoiceLp());
+                if (firstRow == null) firstRow = row;
+            }
+            initialFocus = firstRow;
+        }
+        addFamilyManagementAction(panel, R.string.close, () -> {
+            dialog.dismiss();
+            if (profile != null) showFamilyScheduleChooser();
+            else showFamilyManagementPanel();
+        });
+        dialog.setContentView(panel);
+        configureFamilyDialog(dialog, 0.68f);
+        dialog.show();
+        sizeFamilyDialog(dialog, profile == null ? 0.45f : 0.66f);
+        if (initialFocus != null) initialFocus.requestFocus();
+    }
+
+    private String scheduleLabel(String day, FamilyTimePolicy.Schedule schedule) {
+        return getString(R.string.family_schedule_day, day, formatMinute(schedule.startMinute),
+                formatMinute(schedule.endMinute), (int) (schedule.budgetMs / FamilyTimePolicy.MINUTE_MS));
+    }
+
+    private String formatMinute(int minute) {
+        return String.format(Locale.getDefault(), "%02d:%02d", minute / 60, minute % 60);
+    }
+
+    private void editFamilySchedule(FamilyProfileStore.Profile profile, DayOfWeek day) {
+        LocalDate referenceDate = LocalDate.now(FAMILY_ZONE).with(java.time.temporal.TemporalAdjusters.nextOrSame(day));
+        FamilyProfileStore.Snapshot snapshot = familyStore.snapshot(referenceDate);
+        if (familyStore.hasStorageError()) {
+            Toast.makeText(this, R.string.family_storage_error, Toast.LENGTH_LONG).show();
+            return;
+        }
+        FamilyTimePolicy.Schedule initial = profile == FamilyProfileStore.Profile.XBOX
+                ? snapshot.xboxSchedule : snapshot.childSchedule;
+        int[] values = {initial.startMinute, initial.endMinute,
+                (int) (initial.budgetMs / FamilyTimePolicy.MINUTE_MS)};
+        Dialog dialog = new Dialog(this);
+        dialog.requestWindowFeature(Window.FEATURE_NO_TITLE);
+        LinearLayout panel = familyPanel();
+        String dayName = day.getDisplayName(java.time.format.TextStyle.FULL, Locale.getDefault());
+        panel.addView(familyText(getString(R.string.family_schedule_edit_title, dayName), 20, Color.WHITE));
+        TextView start = familyChoice("", true, () -> { });
+        TextView end = familyChoice("", true, () -> { });
+        TextView limit = familyChoice("", true, () -> { });
+        Runnable refresh = () -> {
+            start.setText(getString(R.string.family_schedule_start, formatMinute(values[0])));
+            end.setText(getString(R.string.family_schedule_end, formatMinute(values[1])));
+            limit.setText(getString(R.string.family_schedule_limit, values[2]));
+        };
+        int[] starts = {0, 5 * 60, 6 * 60, 7 * 60, 8 * 60, 9 * 60, 10 * 60,
+                12 * 60, 14 * 60, 16 * 60, 18 * 60, 20 * 60};
+        int[] ends = {12 * 60, 14 * 60, 16 * 60, 18 * 60, 19 * 60, 20 * 60,
+                21 * 60, 22 * 60, 23 * 60, 24 * 60};
+        int[] limits = {15, 30, 45, 60, 75, 90, 120, 150, 180, 240, 300, 360, 420, 480};
+        start.setOnClickListener(v -> {
+            int[] eligible = Arrays.stream(starts).filter(value -> value < values[1]).toArray();
+            values[0] = nextChoice(values[0], eligible);
+            refresh.run();
+        });
+        end.setOnClickListener(v -> {
+            int[] eligible = Arrays.stream(ends).filter(value -> value > values[0]).toArray();
+            values[1] = nextChoice(values[1], eligible);
+            refresh.run();
+        });
+        limit.setOnClickListener(v -> { values[2] = nextChoice(values[2], limits); refresh.run(); });
+        refresh.run();
+        panel.addView(start, familyChoiceLp());
+        panel.addView(end, familyChoiceLp());
+        panel.addView(limit, familyChoiceLp());
+        addFamilyManagementAction(panel, R.string.family_schedule_restore_default, () -> {
+            FamilyTimePolicy.Schedule defaults = FamilyTimePolicy.defaultSchedule(
+                    profile == FamilyProfileStore.Profile.XBOX ? FamilyTimePolicy.Profile.XBOX
+                            : FamilyTimePolicy.Profile.CHILD_TV, day);
+            values[0] = defaults.startMinute;
+            values[1] = defaults.endMinute;
+            values[2] = (int) (defaults.budgetMs / FamilyTimePolicy.MINUTE_MS);
+            refresh.run();
+        });
+        addFamilyManagementAction(panel, R.string.save, () -> {
+            if (!familyStore.setSchedule(profile, day, values[0], values[1], values[2])) {
+                Toast.makeText(this, R.string.family_storage_error, Toast.LENGTH_LONG).show();
+                return;
+            }
+            dialog.dismiss();
+            Toast.makeText(this, R.string.family_schedule_saved, Toast.LENGTH_SHORT).show();
+            showFamilySchedulePage(profile);
+        });
+        addFamilyManagementAction(panel, R.string.cancel, dialog::dismiss);
+        dialog.setContentView(panel);
+        configureFamilyDialog(dialog, 0.68f);
+        dialog.show();
+        sizeFamilyDialog(dialog, 0.5f);
+        start.requestFocus();
+    }
+
+    private static int nextChoice(int current, int[] choices) {
+        if (choices == null || choices.length == 0) return current;
+        for (int i = 0; i < choices.length; i++) {
+            if (choices[i] == current) return choices[(i + 1) % choices.length];
+            if (i == choices.length - 1) return choices[0];
+        }
+        return choices[0];
     }
 
     private void showFamilyInputChooser() {

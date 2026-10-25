@@ -1,6 +1,6 @@
 # CleanYourTV — Edição Família
 
-Edição experimental 2.7 no ramo `feature/family-profiles`, derivada da CleanYourTV Custom Edition 2.4. Esta versão usa `versionCode` 8 para permitir atualização das versões experimentais anteriores. Está a ser preparada para Android TV 9 e não substitui nem altera o ramo estável `custom-2.4`.
+Edição experimental 2.8 no ramo `feature/family-profiles`, derivada da CleanYourTV Custom Edition 2.4. Esta versão usa `versionCode` 9 para permitir atualização das versões experimentais anteriores. Está a ser preparada para Android TV 9 e não substitui nem altera o ramo estável `custom-2.4`.
 
 ## Perfis e limites
 
@@ -10,7 +10,11 @@ Edição experimental 2.7 no ramo `feature/family-profiles`, derivada da CleanYo
 | Criança (TV) | Seleção no launcher | 07:00–22:00, hora de Lisboa | 60 minutos |
 | Xbox (HDMI) | Entrada HDMI escolhida pelo adulto | 07:00–22:00, hora de Lisboa | 60 minutos nos dias úteis; 120 minutos ao fim de semana |
 
-O controlo começa desativado e só é ativado por um adulto autenticado. Não existe sequência predefinida. Para introduzir ou confirmar a sequência, usar Cima, Baixo, Esquerda e Direita; OK confirma; Voltar apaga o último movimento ou cancela quando não há movimentos. O ecrã mostra apenas indicadores de progresso, nunca a sequência introduzida. Os saldos de Criança e Xbox são independentes e persistem por dia civil. A gestão familiar permite consultar o consumo, acrescentar tempo e escolher a entrada HDMI.
+O controlo começa desativado e só é ativado por um adulto autenticado. Não existe sequência predefinida. Para introduzir ou confirmar a sequência, usar Cima, Baixo, Esquerda e Direita; OK confirma; Voltar apaga o último movimento ou cancela quando não há movimentos. O ecrã mostra apenas indicadores de progresso, nunca a sequência introduzida. Os saldos de Criança e Xbox são independentes e persistem por dia civil. A gestão familiar permite consultar o consumo, acrescentar 15, 30 ou 60 minutos, rever os últimos sete dias, ajustar horários/limites por dia da semana e escolher a entrada HDMI.
+
+Os horários avançados são opcionais e independentes para Criança e Xbox. Sem alterações, mantêm-se 07:00–22:00 e os limites existentes (60 minutos para Criança; 60 minutos úteis e 120 minutos ao fim de semana para Xbox). As janelas são do mesmo dia; não são aceites horários que atravessem a meia-noite. Cada dia pode ser reposto individualmente à predefinição.
+
+As estatísticas são locais, mantêm Criança e Xbox em colunas/valores separados e mostram os últimos sete dias, incluindo o dia atual. Apenas contam intervalos registados como ecrã ligado e aplicação em primeiro plano. A suspensão normal é excluída pelo estado de ecrã e pelos relógios monotónicos. Se o processo for terminado enquanto o dispositivo continua ligado, o estado persistido pode levar a contabilizar conservadoramente o intervalo desde a última amostra; eventos entretanto ocorridos podem causar uma pequena sobrecontagem. Se o dispositivo reiniciar, o relógio monotónico deixa de ser contínuo: a sessão é encerrada sem cobrar esse intervalo desconhecido, o acesso infantil fica suspenso e o Adulto tem de rever o relógio antes de retomar. Os perfis não partilham nem duplicam saldos.
 
 ## Aplicações do perfil Criança
 
@@ -26,7 +30,15 @@ Na primeira utilização desta versão, a aplicação pede o PIN parental anteri
 
 Para iniciar aplicações em qualquer perfil familiar, o adulto tem de conceder manualmente **Acesso a dados de utilização** nas Definições Android. A autorização é um acesso especial do sistema e não é concedida pela instalação. O serviço temporário de primeiro plano só funciona durante uma sessão iniciada pelo CleanYourTV e consulta eventos de pacote em primeiro plano; não lê texto, palavras-passe ou conteúdo do ecrã. Não é usado um serviço de acessibilidade para vigiar aplicações. O perfil Adulto não tem quota; esse monitor permite regressar ao launcher e pedir a sequência novamente depois de suspensão.
 
-O serviço consulta a utilização a cada 10 segundos. O contador usa relógios monotónicos, não conta o período de ecrã desligado e divide a utilização à meia-noite em `Europe/Lisbon`. Há avisos aos 10, 5 e 1 minutos. A mudança de aplicação ou o fim do tempo podem ser reconhecidos com até cerca de 10 segundos de atraso.
+O serviço existe apenas enquanto uma sessão de perfil está pendente; não fica ativo em repouso. Uma thread de trabalho consulta Usage Events e grava o estado a cada 10 segundos. A atualização do cursor e do contador é guardada num único `fsync` atómico por ciclo; a interface, os Toasts, a sobreposição e a tentativa de abrir o Home são encaminhados para a thread principal Android. O contador usa relógios monotónicos, não conta o período de ecrã desligado e divide a utilização à meia-noite em `Europe/Lisbon`. Há avisos aos 10, 5 e 1 minutos. A mudança de aplicação ou o fim do tempo podem ser reconhecidos com até cerca de 10 segundos de atraso.
+
+## Diagnóstico rápido
+
+Depois de autenticar a gestão familiar como Adulto, é possível iniciar uma sessão experimental de 2 ou 5 minutos para uma aplicação aprovada de Criança ou para a entrada Xbox configurada. O teste usa um contador separado, apresenta progresso na barra, emite o aviso de 1 minuto, regressa ao CleanYourTV ao terminar e não altera o saldo, extensões ou histórico diários. O teste de Criança só pode abrir aplicações já aprovadas; o de Xbox usa apenas a entrada HDMI configurada. Voltar cancela a preparação antes de se iniciar uma aplicação.
+
+A duração mede apenas o tempo que o monitor observa a aplicação em primeiro plano com o ecrã ligado. Ao suspender ou reiniciar a TV, a sessão experimental é terminada/recuperada sem cobrar saldo diário. Estes testes confirmam os fluxos da aplicação, não demonstram que o firmware Xiaomi aceite efetivamente a abertura do Home sobre qualquer aplicação ou vídeo HDMI.
+
+O estado de gestão distingue funcionalidade desligada, falta de Usage Access, dados ilegíveis, necessidade de rever o relógio e estado pronto. “Pronta” significa que a monitorização está preparada para lançamentos originados neste launcher; não significa bloqueio do Android inteiro nem controlo da entrada HDMI.
 
 ## Abertura da entrada Xbox
 
@@ -64,5 +76,7 @@ Antes de confiar nos limites, testar na Xiaomi Mi TV 4S com firmware PI.4663:
 4. Testar regresso com Voltar, botão Home, suspensão/retoma, reinício, revogação do Usage Access e mudança de hora.
 5. Confirmar separadamente o perfil Xbox e os atalhos HDMI. Não inferir que o sinal HDMI foi bloqueado.
 6. Verificar que o adulto consegue sempre autenticar-se e recuperar uma sessão pendente.
+7. Em Gestão familiar, executar um diagnóstico de 2 minutos numa aplicação aprovada e confirmar barra, aviso, retorno ao CleanYourTV e saldo diário inalterado; depois repetir com 5 minutos ou Xbox.
+8. Alterar um dia no horário avançado, confirmar o bloqueio/abertura no horário escolhido, repor a predefinição e rever os sete dias de estatísticas.
 
 Os testes JVM e de interface/emulador verificam política, persistência, foco e fluxos da aplicação; não provam que a firmware da TV aceite iniciar o Home a partir do serviço em segundo plano. Essa validação física continua pendente. O APK experimental não é instalado automaticamente; preservar um caminho de recuperação para voltar à versão estável.

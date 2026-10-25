@@ -104,4 +104,29 @@ public class FamilyMonitorPolicyTest {
                 FamilyMonitorPolicy.decide(true, true, false, true, FamilyProfileStore.Profile.CHILD_TV,
                         FamilyMonitorPolicy.Foreground.APP, OPEN, 0L, 0L, false, true, 60_000L));
     }
+
+    @Test public void diagnosticSessionUsesItsIsolatedTimerAndStillFailsClosedOnClockUncertainty() {
+        FamilyTimePolicy.Schedule schedule = new FamilyTimePolicy.Schedule(7 * 60, 22 * 60,
+                60L * FamilyTimePolicy.MINUTE_MS);
+        assertEquals(FamilyMonitorPolicy.Action.KEEP_RUNNING,
+                FamilyMonitorPolicy.decide(true, true, true, true, FamilyProfileStore.Profile.CHILD_TV,
+                        FamilyMonitorPolicy.Foreground.APP, OPEN.withHour(23), 60L * FamilyTimePolicy.MINUTE_MS,
+                        0L, false, true, 60_000L, schedule, true, FamilyTimePolicy.MINUTE_MS));
+        assertEquals(FamilyMonitorPolicy.Action.RETURN_HOME,
+                FamilyMonitorPolicy.decide(true, true, true, true, FamilyProfileStore.Profile.CHILD_TV,
+                        FamilyMonitorPolicy.Foreground.APP, OPEN, 0L, 0L, false, true, 60_000L,
+                        schedule, true, 0L));
+        assertEquals(FamilyMonitorPolicy.Action.RETURN_HOME,
+                FamilyMonitorPolicy.decide(true, true, true, true, FamilyProfileStore.Profile.CHILD_TV,
+                        FamilyMonitorPolicy.Foreground.APP, OPEN, 0L, 0L, true, true, 60_000L,
+                        schedule, true, FamilyTimePolicy.MINUTE_MS));
+    }
+
+    @Test public void monitorHealthBecomesLimitedWhenSessionPollingIsStale() {
+        assertEquals(false, FamilyMonitorPolicy.isSessionStale(false, 0L, 100_000L));
+        assertEquals(false, FamilyMonitorPolicy.isSessionStale(true, 100_000L, 130_000L));
+        assertEquals(true, FamilyMonitorPolicy.isSessionStale(true, 0L, 100_000L));
+        assertEquals(true, FamilyMonitorPolicy.isSessionStale(true, 100_000L, 130_001L));
+        assertEquals(true, FamilyMonitorPolicy.isSessionStale(true, 130_000L, 100_000L));
+    }
 }

@@ -90,4 +90,17 @@ public class FamilyTimePolicyTest {
         assertFalse(uncertain.allowed);
         assertEquals(FamilyTimePolicy.Reason.CLOCK_UNCERTAIN, uncertain.reason);
     }
+
+    @Test public void configuredWeekdayScheduleOverridesOnlyItsDayValues() {
+        FamilyTimePolicy.Schedule monday = new FamilyTimePolicy.Schedule(8 * 60, 20 * 60,
+                90L * FamilyTimePolicy.MINUTE_MS);
+        assertFalse(FamilyTimePolicy.evaluate(FamilyTimePolicy.Profile.CHILD_TV,
+                at(2026, 10, 26, 7, 59), 0, 0, false, monday).allowed);
+        FamilyTimePolicy.Decision allowed = FamilyTimePolicy.evaluate(FamilyTimePolicy.Profile.CHILD_TV,
+                at(2026, 10, 26, 8, 0), 60L * FamilyTimePolicy.MINUTE_MS, 0, false, monday);
+        assertTrue(allowed.allowed);
+        assertEquals(30L * FamilyTimePolicy.MINUTE_MS, allowed.remainingMs);
+        assertFalse(FamilyTimePolicy.evaluate(FamilyTimePolicy.Profile.CHILD_TV,
+                at(2026, 10, 26, 20, 0), 0, 0, false, monday).allowed);
+    }
 }

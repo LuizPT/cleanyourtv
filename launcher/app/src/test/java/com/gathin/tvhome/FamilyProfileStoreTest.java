@@ -12,11 +12,15 @@ import java.io.File;
 import java.io.FileOutputStream;
 import java.nio.file.Files;
 import java.time.LocalDate;
+import java.time.DayOfWeek;
 import java.time.ZoneId;
 import java.time.ZonedDateTime;
 import java.util.Arrays;
 import java.util.Collections;
 import java.util.Set;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicReference;
 
 public class FamilyProfileStoreTest {
     private static final ZoneId LISBON = ZoneId.of("Europe/Lisbon");
@@ -275,6 +279,57 @@ public class FamilyProfileStoreTest {
         assertEquals(75L * 60_000L, store().snapshot(day).remainingMs(FamilyProfileStore.Profile.CHILD_TV, day));
     }
 
+    @Test public void monitorTicksAndAdultExtensionsCannotOverwriteEachOther() throws Exception {
+        LocalDate day = LocalDate.of(2026, 10, 24);
+        long startWall = wall(day, 12, 0), startElapsed = 8_000_000L;
+        FamilyProfileStore monitorStore = store();
+        FamilyProfileStore adultStore = store();
+        assertTrue(monitorStore.startSession(FamilyProfileStore.Profile.CHILD_TV, "video.app",
+                day, startWall, startElapsed, startElapsed, true));
+        markAppForeground(monitorStore, day, startWall, startElapsed);
+
+        CountDownLatch ready = new CountDownLatch(2);
+        CountDownLatch start = new CountDownLatch(1);
+        CountDownLatch finished = new CountDownLatch(2);
+        AtomicReference<Throwable> failure = new AtomicReference<>();
+        Thread monitor = new Thread(() -> {
+            ready.countDown();
+            try {
+                start.await();
+                for (int i = 1; i <= 25; i++) {
+                    long delta = i * 1_000L;
+                    if (!monitorStore.recordSession(day, startWall + delta,
+                            startElapsed + delta, startElapsed + delta).saved) {
+                        throw new AssertionError("monitor tick was not saved");
+                    }
+                }
+            } catch (Throwable error) { failure.compareAndSet(null, error); }
+            finally { finished.countDown(); }
+        });
+        Thread adult = new Thread(() -> {
+            ready.countDown();
+            try {
+                start.await();
+                for (int i = 0; i < 25; i++) {
+                    if (!adultStore.addExtension(FamilyProfileStore.Profile.CHILD_TV, day, 1)) {
+                        throw new AssertionError("adult extension was not saved");
+                    }
+                }
+            } catch (Throwable error) { failure.compareAndSet(null, error); }
+            finally { finished.countDown(); }
+        });
+        monitor.start();
+        adult.start();
+        assertTrue(ready.await(5, TimeUnit.SECONDS));
+        start.countDown();
+        assertTrue("concurrent storage updates completed", finished.await(10, TimeUnit.SECONDS));
+        if (failure.get() != null) throw new AssertionError("concurrent storage update failed", failure.get());
+
+        FamilyProfileStore.Snapshot snapshot = store().snapshot(day);
+        assertEquals(25_000L, snapshot.childUsedMs);
+        assertEquals(25L * FamilyTimePolicy.MINUTE_MS, snapshot.childExtensionMs);
+    }
+
     @Test public void monitorResumeAfterProcessDeathChargesElapsedForegroundTime() {
         LocalDate day = LocalDate.of(2026, 10, 23);
         long startWall = wall(day, 12, 0), startElapsed = 1_000_000L;
@@ -347,5 +402,105 @@ public class FamilyProfileStoreTest {
         assertTrue(update.saved);
         assertFalse(store().snapshot(day).clockUncertain);
         assertEquals(60_000L, store().snapshot(day).childUsedMs);
+    }
+
+    @Test public void diagnosticSessionPersistsItsOwnTimerWithoutChangingDailyBalances() {
+        LocalDate day = LocalDate.of(2026, 10, 23);
+        long startWall = wall(day, 12, 0);
+        long startMono = 5_000_000L;
+        FamilyProfileStore state = store();
+        assertFalse(state.startDiagnosticSession(FamilyProfileStore.Profile.CHILD_TV, "video.app", 3,
+                day, startWall, startMono, startMono, true));
+        assertFalse(state.startDiagnosticSession(FamilyProfileStore.Profile.ADULT, "video.app", 2,
+                day, startWall, startMono, startMono, true));
+        assertTrue(state.startDiagnosticSession(FamilyProfileStore.Profile.CHILD_TV, "video.app", 2,
+                day, startWall, startMono, startMono, true));
+        markAppForeground(state, day, startWall, startMono);
+
+        FamilyProfileStore.UsageUpdate halfway = store().recordSession(day,
+                startWall + FamilyTimePolicy.MINUTE_MS, startMono + FamilyTimePolicy.MINUTE_MS,
+                startMono + FamilyTimePolicy.MINUTE_MS);
+        assertTrue(halfway.saved);
+        assertTrue(halfway.diagnostic);
+        assertEquals(FamilyTimePolicy.MINUTE_MS, halfway.remainingMs);
+        assertEquals(Collections.singletonList(1), halfway.warningsMinutes);
+
+        FamilyProfileStore.Snapshot reopened = store().snapshot(day);
+        assertTrue(reopened.sessionDiagnostic);
+        assertEquals(FamilyTimePolicy.MINUTE_MS, reopened.diagnosticUsedMs);
+        assertEquals(FamilyTimePolicy.MINUTE_MS, reopened.diagnosticRemainingMs());
+        assertEquals("diagnostics never consume the daily quota", 0L, reopened.childUsedMs);
+
+        FamilyProfileStore.UsageUpdate expired = store().recordSession(day,
+                startWall + 2 * FamilyTimePolicy.MINUTE_MS, startMono + 2 * FamilyTimePolicy.MINUTE_MS,
+                startMono + 2 * FamilyTimePolicy.MINUTE_MS);
+        assertTrue(expired.saved);
+        assertEquals(0L, expired.remainingMs);
+        assertEquals(0L, store().snapshot(day).childUsedMs);
+        assertTrue(store().finishSession(day, startWall + 2 * FamilyTimePolicy.MINUTE_MS,
+                startMono + 2 * FamilyTimePolicy.MINUTE_MS, startMono + 2 * FamilyTimePolicy.MINUTE_MS).saved);
+        FamilyProfileStore.Snapshot finished = store().snapshot(day);
+        assertFalse(finished.sessionPending);
+        assertFalse(finished.sessionDiagnostic);
+        assertEquals(0L, finished.childUsedMs);
+    }
+
+    @Test public void weekdaySchedulesPersistAndRejectInvalidWindows() {
+        LocalDate saturday = LocalDate.of(2026, 10, 24);
+        FamilyProfileStore state = store();
+        assertEquals(60L * FamilyTimePolicy.MINUTE_MS,
+                state.snapshot(saturday).remainingMs(FamilyProfileStore.Profile.CHILD_TV, saturday));
+        assertFalse(state.setSchedule(FamilyProfileStore.Profile.CHILD_TV, DayOfWeek.SATURDAY,
+                22 * 60, 7 * 60, 90));
+        assertFalse(state.setSchedule(FamilyProfileStore.Profile.ADULT, DayOfWeek.SATURDAY,
+                7 * 60, 22 * 60, 90));
+        assertTrue(state.setSchedule(FamilyProfileStore.Profile.CHILD_TV, DayOfWeek.SATURDAY,
+                8 * 60, 21 * 60, 90));
+
+        FamilyProfileStore reopened = store();
+        FamilyTimePolicy.Schedule schedule = reopened.snapshot(saturday).childSchedule;
+        assertEquals(8 * 60, schedule.startMinute);
+        assertEquals(21 * 60, schedule.endMinute);
+        assertEquals(90L * FamilyTimePolicy.MINUTE_MS,
+                reopened.snapshot(saturday).remainingMs(FamilyProfileStore.Profile.CHILD_TV, saturday));
+        assertTrue(reopened.setSchedule(FamilyProfileStore.Profile.CHILD_TV, DayOfWeek.SATURDAY,
+                7 * 60, 22 * 60, 60));
+        assertEquals(7 * 60, store().snapshot(saturday).childSchedule.startMinute);
+    }
+
+    @Test public void interruptedDiagnosticIsClearedOnRecoveryWithoutChargingDailyBalance() {
+        LocalDate day = LocalDate.of(2026, 10, 23);
+        long wall = wall(day, 12, 0), elapsed = 7_000_000L;
+        FamilyProfileStore state = store();
+        assertTrue(state.startDiagnosticSession(FamilyProfileStore.Profile.XBOX, "vendor.tv.input", 5,
+                day, wall, elapsed, elapsed, true));
+        markAppForeground(state, day, wall, elapsed);
+        assertTrue(store().snapshot(day).sessionDiagnostic);
+
+        FamilyProfileStore reopened = store();
+        assertTrue(reopened.recoverInterruptedSession(wall + 3 * FamilyTimePolicy.MINUTE_MS,
+                elapsed + 3 * FamilyTimePolicy.MINUTE_MS, day));
+        FamilyProfileStore.Snapshot recovered = store().snapshot(day);
+        assertFalse(recovered.sessionPending);
+        assertFalse(recovered.sessionDiagnostic);
+        assertTrue(recovered.clockUncertain);
+        assertTrue(recovered.mustReturnHome);
+        assertEquals(0L, recovered.xboxUsedMs);
+        assertEquals(0L, recovered.xboxExtensionMs);
+    }
+
+    @Test public void dailyUsageHistoryIsLocalSeparatedAndIncludesEmptyDays() {
+        LocalDate day = LocalDate.of(2026, 10, 23);
+        long startWall = wall(day, 12, 0), startMono = 6_000_000L;
+        FamilyProfileStore state = store();
+        assertTrue(state.startSession(FamilyProfileStore.Profile.CHILD_TV, "video.app", day,
+                startWall, startMono, startMono, true));
+        markAppForeground(state, day, startWall, startMono);
+        state.finishSession(day, startWall + 12 * FamilyTimePolicy.MINUTE_MS,
+                startMono + 12 * FamilyTimePolicy.MINUTE_MS, startMono + 12 * FamilyTimePolicy.MINUTE_MS);
+        assertEquals(Long.valueOf(12 * FamilyTimePolicy.MINUTE_MS),
+                store().usageHistory(FamilyProfileStore.Profile.CHILD_TV, day, 7).get(day));
+        assertEquals(Long.valueOf(0L), store().usageHistory(FamilyProfileStore.Profile.XBOX, day, 7).get(day));
+        assertEquals(7, store().usageHistory(FamilyProfileStore.Profile.CHILD_TV, day, 7).size());
     }
 }

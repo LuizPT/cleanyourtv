@@ -10,10 +10,10 @@ android {
         applicationId 'com.gathin.tvhome'
         minSdk 26
         targetSdk 34
-        // Keep the existing code so the saved pre-change APK can be restored with `adb install -r`
-        // without a version downgrade; Android accepts replacement at the same version code.
-        versionCode 8
-        versionName '2.7-family-apps-xbox-experimental'
+        // Each family experiment gets a higher code while retaining the applicationId and signer,
+        // so it upgrades in place without removing app data.
+        versionCode 9
+        versionName '2.8-family-reliability-experimental'
         testInstrumentationRunner 'androidx.test.runner.AndroidJUnitRunner'
     }
 

@@ -25,6 +25,16 @@ final class FamilyAccessPolicy {
     static Decision evaluate(FamilyTimePolicy.Profile profile, Target target,
                              String targetInputId, String xboxInputId, ZonedDateTime when,
                              long consumedMs, long extensionMs, boolean clockUncertain) {
+        FamilyTimePolicy.Schedule schedule = profile == null || when == null
+                ? null : FamilyTimePolicy.defaultSchedule(profile, when.getDayOfWeek());
+        return evaluate(profile, target, targetInputId, xboxInputId, when, consumedMs,
+                extensionMs, clockUncertain, schedule, false);
+    }
+
+    static Decision evaluate(FamilyTimePolicy.Profile profile, Target target,
+                             String targetInputId, String xboxInputId, ZonedDateTime when,
+                             long consumedMs, long extensionMs, boolean clockUncertain,
+                             FamilyTimePolicy.Schedule schedule, boolean diagnosticSession) {
         if (profile == null) return denied(Reason.PROFILE_REQUIRED);
         if (profile == FamilyTimePolicy.Profile.ADULT) {
             return new Decision(true, Reason.ALLOWED, Long.MAX_VALUE);
@@ -42,8 +52,9 @@ final class FamilyAccessPolicy {
             }
         }
 
+        if (diagnosticSession) return new Decision(true, Reason.ALLOWED, 0L);
         FamilyTimePolicy.Decision time = FamilyTimePolicy.evaluate(
-                profile, when, consumedMs, extensionMs, clockUncertain);
+                profile, when, consumedMs, extensionMs, clockUncertain, schedule);
         if (time.allowed) return new Decision(true, Reason.ALLOWED, time.remainingMs);
         switch (time.reason) {
             case OUTSIDE_HOURS:

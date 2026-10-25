@@ -178,8 +178,8 @@
     <string name="family_time_hours" tools:ignore="MissingTranslation">Allowed from 07:00 to 22:00</string>
     <string name="family_clock_uncertain" tools:ignore="MissingTranslation">The TV clock or a previous session could not be verified. Child and Xbox launches are paused until an adult reviews the time.</string>
     <string name="family_clock_confirm" tools:ignore="MissingTranslation">Confirm TV time</string>
-    <string name="family_add_time_child" tools:ignore="MissingTranslation">Add 15 minutes to Child</string>
-    <string name="family_add_time_xbox" tools:ignore="MissingTranslation">Add 15 minutes to Xbox</string>
+    <string name="family_add_time_child" tools:ignore="MissingTranslation">Add time to Child</string>
+    <string name="family_add_time_xbox" tools:ignore="MissingTranslation">Add time to Xbox</string>
     <string name="family_time_added" tools:ignore="MissingTranslation">15 minutes added for today.</string>
     <string name="family_xbox_input" tools:ignore="MissingTranslation">Choose Xbox HDMI input</string>
     <string name="family_xbox_input_none" tools:ignore="MissingTranslation">No available HDMI inputs were found.</string>
@@ -229,5 +229,46 @@
     <plurals name="family_time_bar_warning" tools:ignore="MissingTranslation">
         <item quantity="one">%1$d minute remaining</item>
         <item quantity="other">%1$d minutes remaining</item>
+    </plurals>
+    <string name="family_profile_available_today_at" tools:ignore="MissingTranslation">Available today at %1$s</string>
+    <string name="family_profile_available_tomorrow_at" tools:ignore="MissingTranslation">Available tomorrow at %1$s</string>
+    <string name="family_profile_status_next" tools:ignore="MissingTranslation">%1$s · %2$s</string>
+    <string name="family_time_bar_diagnostic_used" tools:ignore="MissingTranslation">%1$d/%2$d · test</string>
+    <string name="family_protection_disabled" tools:ignore="MissingTranslation">Family limits are off.</string>
+    <string name="family_protection_storage_error" tools:ignore="MissingTranslation">Protection is limited: family data could not be read.</string>
+    <string name="family_protection_limited" tools:ignore="MissingTranslation">Protection is limited: enable Android Usage Access.</string>
+    <string name="family_protection_clock_review" tools:ignore="MissingTranslation">Protection is paused: an adult must review the TV clock.</string>
+    <string name="family_protection_monitor_stale" tools:ignore="MissingTranslation">Protection is limited: the session monitor has stopped updating.</string>
+    <string name="family_protection_ready" tools:ignore="MissingTranslation">Ready for launches from this launcher; Android and HDMI controls remain limited.</string>
+    <string name="family_diagnostic_title" tools:ignore="MissingTranslation">Quick diagnostics</string>
+    <string name="family_diagnostic_help" tools:ignore="MissingTranslation">Adult only. A test session uses its own timer and never changes daily balances. For Child, choose an approved app after starting; Back cancels.</string>
+    <string name="family_diagnostic_unavailable" tools:ignore="MissingTranslation">Diagnostics need Family Edition enabled and Android Usage Access.</string>
+    <string name="family_diagnostic_child_2" tools:ignore="MissingTranslation">Child app · 2 minutes</string>
+    <string name="family_diagnostic_child_5" tools:ignore="MissingTranslation">Child app · 5 minutes</string>
+    <string name="family_diagnostic_xbox_2" tools:ignore="MissingTranslation">Xbox input · 2 minutes</string>
+    <string name="family_diagnostic_xbox_5" tools:ignore="MissingTranslation">Xbox input · 5 minutes</string>
+    <string name="family_diagnostic_choose_app" tools:ignore="MissingTranslation">Choose an approved app to start the test. Press Back to cancel.</string>
+    <string name="family_diagnostic_start_failed" tools:ignore="MissingTranslation">The diagnostic session could not start. No daily time was used.</string>
+    <string name="family_diagnostic_cancelled" tools:ignore="MissingTranslation">Diagnostic session cancelled.</string>
+    <string name="family_diagnostic_complete" tools:ignore="MissingTranslation">Diagnostic time is over. Returning to CleanYourTV.</string>
+    <string name="family_statistics_title" tools:ignore="MissingTranslation">Family usage · last 7 days</string>
+    <string name="family_statistics_local" tools:ignore="MissingTranslation">Stored only on this TV. Child and Xbox totals are separate.</string>
+    <string name="family_statistics_day" tools:ignore="MissingTranslation">%1$s · Child %2$s · Xbox %3$s</string>
+    <string name="family_advanced_schedule" tools:ignore="MissingTranslation">Advanced schedules</string>
+    <string name="family_schedule_help" tools:ignore="MissingTranslation">Choose a day to adjust its allowed hours and daily limit. Existing defaults apply until changed.</string>
+    <string name="family_schedule_day" tools:ignore="MissingTranslation">%1$s · %2$s–%3$s · %4$d min</string>
+    <string name="family_schedule_edit_title" tools:ignore="MissingTranslation">Schedule · %1$s</string>
+    <string name="family_schedule_start" tools:ignore="MissingTranslation">Starts at %1$s</string>
+    <string name="family_schedule_end" tools:ignore="MissingTranslation">Ends at %1$s</string>
+    <string name="family_schedule_limit" tools:ignore="MissingTranslation">Daily limit: %1$d min</string>
+    <string name="family_schedule_restore_default" tools:ignore="MissingTranslation">Restore this day’s default</string>
+    <string name="family_schedule_saved" tools:ignore="MissingTranslation">Schedule saved.</string>
+    <string name="family_add_time_title" tools:ignore="MissingTranslation">Choose extra time</string>
+    <string name="family_add_time_15" tools:ignore="MissingTranslation">Add 15 minutes</string>
+    <string name="family_add_time_30" tools:ignore="MissingTranslation">Add 30 minutes</string>
+    <string name="family_add_time_60" tools:ignore="MissingTranslation">Add 60 minutes</string>
+    <plurals name="family_time_added_minutes" tools:ignore="MissingTranslation">
+        <item quantity="one">Added %1$d minute.</item>
+        <item quantity="other">Added %1$d minutes.</item>
     </plurals>
 </resources>

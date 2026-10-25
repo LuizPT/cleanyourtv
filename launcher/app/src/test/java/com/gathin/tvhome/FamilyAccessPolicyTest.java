@@ -65,4 +65,20 @@ public class FamilyAccessPolicyTest {
         assertFalse(decision.allowed);
         assertEquals(FamilyAccessPolicy.Reason.PROFILE_REQUIRED, decision.reason);
     }
+
+    @Test public void diagnosticBypassesOnlyTimeAndKeepsTargetRestrictions() {
+        FamilyTimePolicy.Schedule schedule = new FamilyTimePolicy.Schedule(7 * 60, 22 * 60,
+                60L * FamilyTimePolicy.MINUTE_MS);
+        FamilyAccessPolicy.Decision child = FamilyAccessPolicy.evaluate(FamilyTimePolicy.Profile.CHILD_TV,
+                FamilyAccessPolicy.Target.APP, null, null, at(23, 0), Long.MAX_VALUE, 0L, false,
+                schedule, true);
+        assertTrue(child.allowed);
+        assertFalse(FamilyAccessPolicy.evaluate(FamilyTimePolicy.Profile.CHILD_TV,
+                FamilyAccessPolicy.Target.SYSTEM_SETTINGS, null, null, at(23, 0), 0L, 0L, false,
+                schedule, true).allowed);
+        assertEquals(FamilyAccessPolicy.Reason.WRONG_XBOX_INPUT,
+                FamilyAccessPolicy.evaluate(FamilyTimePolicy.Profile.XBOX,
+                        FamilyAccessPolicy.Target.PASSTHROUGH_INPUT, "vendor/.TvInput/HW2", XBOX_INPUT,
+                        at(23, 0), 0L, 0L, false, schedule, true).reason);
+    }
 }
