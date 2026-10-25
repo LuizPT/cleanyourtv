@@ -1083,7 +1083,8 @@ public class MainActivity extends Activity implements AppAdapter.TileListener {
     private void authenticate(String title, Runnable allowed) {
         if (!parentalStateAvailable()) return;
         if (launcherState.isUnlockSequenceConfigured()) {
-            showSequenceEntry(title, sequence -> {
+            showSequenceEntry(title, LauncherState.UNLOCK_SEQUENCE_MAX_LEGACY_MOVES,
+                    R.string.sequence_auth_entry_help, sequence -> {
                 LauncherState.PinResult result = launcherState.verifyUnlockSequence(sequence, System.currentTimeMillis());
                 Arrays.fill(sequence, '\0');
                 handleCredentialResult(result, allowed, true);
@@ -1139,8 +1140,10 @@ public class MainActivity extends Activity implements AppAdapter.TileListener {
     }
 
     private void setupUnlockSequence(Runnable afterSave) {
-        showSequenceEntry(getString(R.string.sequence_setup_title), first -> {
-            showSequenceEntry(getString(R.string.sequence_confirm_title), second -> {
+        showSequenceEntry(getString(R.string.sequence_setup_title), LauncherState.UNLOCK_SEQUENCE_MAX_MOVES,
+                R.string.sequence_entry_help, first -> {
+            showSequenceEntry(getString(R.string.sequence_confirm_title), LauncherState.UNLOCK_SEQUENCE_MAX_MOVES,
+                    R.string.sequence_entry_help, second -> {
                 boolean same = LauncherState.sameUnlockSequence(first, second);
                 Arrays.fill(second, '\0');
                 if (!same) {
@@ -1256,7 +1259,8 @@ public class MainActivity extends Activity implements AppAdapter.TileListener {
     private interface SequenceSubmit { void onSequence(char[] sequence); }
 
     /** D-pad sequence input is local to this dialog; the secret is represented only by progress dots. */
-    private void showSequenceEntry(String titleText, SequenceSubmit submit, Runnable onCancel) {
+    private void showSequenceEntry(String titleText, int maxMoves, int helpText, SequenceSubmit submit,
+                                   Runnable onCancel) {
         Dialog dialog = new Dialog(this);
         dialog.requestWindowFeature(Window.FEATURE_NO_TITLE);
         LinearLayout panel = new LinearLayout(this);
@@ -1271,7 +1275,7 @@ public class MainActivity extends Activity implements AppAdapter.TileListener {
         title.setTextSize(22);
         panel.addView(title, new LinearLayout.LayoutParams(-1, -2));
         TextView help = new TextView(this);
-        help.setText(R.string.sequence_entry_help);
+        help.setText(helpText);
         help.setTextColor(0xFFB8B8BE);
         help.setTextSize(14);
         LinearLayout.LayoutParams helpLp = new LinearLayout.LayoutParams(-1, -2);
@@ -1286,15 +1290,26 @@ public class MainActivity extends Activity implements AppAdapter.TileListener {
         progress.setPadding(0, dp(16), 0, dp(12));
         panel.addView(progress, new LinearLayout.LayoutParams(-1, -2));
 
-        char[] entered = new char[16];
+        TextView progressCount = new TextView(this);
+        progressCount.setId(R.id.unlock_sequence_count);
+        progressCount.setGravity(Gravity.CENTER);
+        progressCount.setTextColor(0xFFB8B8BE);
+        progressCount.setTextSize(14);
+        progressCount.setImportantForAccessibility(View.IMPORTANT_FOR_ACCESSIBILITY_NO);
+        panel.addView(progressCount, new LinearLayout.LayoutParams(-1, -2));
+
+        char[] entered = new char[maxMoves];
         int[] length = {0};
         boolean[] submitted = {false};
         boolean[] cancelled = {false};
         Runnable redraw = () -> {
-            StringBuilder dots = new StringBuilder(16 * 2);
-            for (int i = 0; i < entered.length; i++) dots.append(i < length[0] ? "● " : "○ ");
+            StringBuilder dots = new StringBuilder(LauncherState.UNLOCK_SEQUENCE_MAX_MOVES * 2);
+            for (int i = 0; i < LauncherState.UNLOCK_SEQUENCE_MAX_MOVES; i++) {
+                dots.append(i < length[0] ? "● " : "○ ");
+            }
             progress.setText(dots.toString().trim());
-            progress.setContentDescription(getString(R.string.sequence_progress_accessibility, length[0], 16));
+            progress.setContentDescription(getString(R.string.sequence_progress_accessibility, length[0], maxMoves));
+            progressCount.setText(getString(R.string.sequence_progress_count, length[0], maxMoves));
         };
         Runnable[] confirm = new Runnable[1];
         Runnable appendUp = () -> appendSequenceMove(entered, length, 'U', redraw);
@@ -1327,7 +1342,7 @@ public class MainActivity extends Activity implements AppAdapter.TileListener {
         redraw.run();
 
         confirm[0] = () -> {
-            if (length[0] < 10) {
+            if (length[0] < LauncherState.UNLOCK_SEQUENCE_MIN_MOVES) {
                 Toast.makeText(this, R.string.sequence_length_error, Toast.LENGTH_SHORT).show();
                 return;
             }

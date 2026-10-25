@@ -128,7 +128,7 @@ public final class FamilyProfileUiTest {
         InstrumentationRegistry.getInstrumentation().sendKeyDownUpSync(KeyEvent.KEYCODE_DPAD_CENTER);
         InstrumentationRegistry.getInstrumentation().waitForIdleSync();
 
-        String authDialog = awaitVisibleText(getString(R.string.sequence_entry_help));
+        String authDialog = awaitVisibleText(getString(R.string.sequence_auth_entry_help));
         assertTrue("Management sequence prompt is missing",
                 authDialog.contains(getString(R.string.family_management)));
         assertFalse("Overlay settings appeared before sequence authentication",
@@ -151,7 +151,7 @@ public final class FamilyProfileUiTest {
             manage.recycle();
         }
 
-        String authDialog = awaitVisibleText(getString(R.string.sequence_entry_help));
+        String authDialog = awaitVisibleText(getString(R.string.sequence_auth_entry_help));
         assertTrue("Manage profiles must authenticate before opening family settings",
                 authDialog.contains(getString(R.string.family_management)));
         assertFalse("Protected settings appeared before sequence authentication",
@@ -162,7 +162,7 @@ public final class FamilyProfileUiTest {
         launchMainActivity();
         awaitVisibleText(getString(R.string.family_select_profile));
         clickView(R.id.familyManageProfiles);
-        awaitVisibleText(getString(R.string.sequence_entry_help));
+        awaitVisibleText(getString(R.string.sequence_auth_entry_help));
         enterSequence("UDLRUDLRUD");
         InstrumentationRegistry.getInstrumentation().sendKeyDownUpSync(KeyEvent.KEYCODE_DPAD_CENTER);
 
@@ -189,7 +189,7 @@ public final class FamilyProfileUiTest {
         awaitVisibleText(getString(R.string.family_select_profile));
 
         clickView(R.id.familyProfileAdult);
-        awaitVisibleText(getString(R.string.sequence_entry_help));
+        awaitVisibleText(getString(R.string.sequence_auth_entry_help));
         int[] adultSequence = {KeyEvent.KEYCODE_DPAD_UP, KeyEvent.KEYCODE_DPAD_DOWN,
                 KeyEvent.KEYCODE_DPAD_LEFT, KeyEvent.KEYCODE_DPAD_RIGHT,
                 KeyEvent.KEYCODE_DPAD_UP, KeyEvent.KEYCODE_DPAD_DOWN,
@@ -213,7 +213,7 @@ public final class FamilyProfileUiTest {
             }
         });
 
-        String prompt = awaitVisibleText(getString(R.string.sequence_entry_help));
+        String prompt = awaitVisibleText(getString(R.string.sequence_auth_entry_help));
         assertFalse("Protected app actions must stay hidden until sequence authentication",
                 prompt.contains(getString(R.string.context_unprotect_sequence)));
         InstrumentationRegistry.getInstrumentation().sendKeyDownUpSync(KeyEvent.KEYCODE_BACK);
@@ -267,12 +267,17 @@ public final class FamilyProfileUiTest {
             adult.recycle();
         }
 
-        awaitVisibleText(getString(R.string.sequence_entry_help));
+        awaitVisibleText(getString(R.string.sequence_auth_entry_help));
         AccessibilityNodeInfo progress = awaitViewById(R.id.unlock_sequence_progress);
         assertNotNull("Sequence progress dots are missing", progress);
         String emptyProgress = String.valueOf(progress.getText());
         assertTrue("Progress should contain only neutral dot indicators", emptyProgress.matches("[●○ ]+"));
+        assertEquals("Only ten move indicators should be shown", 10,
+                emptyProgress.chars().filter(value -> value == '○').count());
         progress.recycle();
+        AccessibilityNodeInfo count = awaitViewById(R.id.unlock_sequence_count);
+        assertEquals("0 / 16", String.valueOf(count.getText()));
+        count.recycle();
 
         int[] moves = {KeyEvent.KEYCODE_DPAD_UP, KeyEvent.KEYCODE_DPAD_DOWN,
                 KeyEvent.KEYCODE_DPAD_LEFT, KeyEvent.KEYCODE_DPAD_RIGHT,
@@ -309,19 +314,23 @@ public final class FamilyProfileUiTest {
         clickExactText(getString(R.string.confirm));
 
         awaitVisibleText(getString(R.string.sequence_setup_title));
-        enterSequence("UDLRUDLRUD");
+        enterSequence("UDL");
+        InstrumentationRegistry.getInstrumentation().sendKeyDownUpSync(KeyEvent.KEYCODE_DPAD_CENTER);
+        assertNotNull("A sequence shorter than four moves must not be submitted",
+                awaitViewById(R.id.unlock_sequence_progress));
+        enterSequence("R");
         InstrumentationRegistry.getInstrumentation().sendKeyDownUpSync(KeyEvent.KEYCODE_DPAD_CENTER);
         awaitVisibleText(getString(R.string.sequence_confirm_title));
         assertFalse("A new sequence must not be enabled before confirmation",
                 readProperties(pinFile).containsKey("unlock_sequence_hash"));
-        enterSequence("UDLRUDLRUD");
+        enterSequence("UDLR");
         InstrumentationRegistry.getInstrumentation().sendKeyDownUpSync(KeyEvent.KEYCODE_DPAD_CENTER);
         InstrumentationRegistry.getInstrumentation().waitForIdleSync();
 
         LauncherState migrated = new LauncherState(pinFile);
         assertTrue("Sequence should be active only after it is saved", migrated.isUnlockSequenceConfigured());
         assertEquals(LauncherState.PinResult.MATCH,
-                migrated.verifyUnlockSequence("UDLRUDLRUD".toCharArray(), System.currentTimeMillis()));
+                migrated.verifyUnlockSequence("UDLR".toCharArray(), System.currentTimeMillis()));
         assertEquals("The recovery PIN hash must survive migration", legacyHash,
                 readProperties(pinFile).getProperty("pin_hash"));
 
@@ -330,7 +339,7 @@ public final class FamilyProfileUiTest {
         launchMainActivity();
         awaitVisibleText(getString(R.string.family_select_profile));
         clickView(R.id.familyProfileAdult);
-        awaitVisibleText(getString(R.string.sequence_entry_help));
+        awaitVisibleText(getString(R.string.sequence_auth_entry_help));
         assertFalse("The active sequence prompt must not show the legacy numeric keypad",
                 hasExactText("0"));
     }

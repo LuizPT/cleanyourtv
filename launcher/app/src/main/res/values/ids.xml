@@ -6,4 +6,5 @@
     <item name="familyProfileXbox" type="id" />
     <item name="familyManageProfiles" type="id" />
     <item name="unlock_sequence_progress" type="id" />
+    <item name="unlock_sequence_count" type="id" />
 </resources>

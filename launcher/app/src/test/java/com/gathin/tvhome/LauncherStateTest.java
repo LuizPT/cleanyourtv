@@ -14,6 +14,8 @@ import java.util.List;
 import java.util.Properties;
 import java.io.FileInputStream;
 import java.io.FileOutputStream;
+import javax.crypto.SecretKeyFactory;
+import javax.crypto.spec.PBEKeySpec;
 
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
@@ -181,7 +183,7 @@ public class LauncherStateTest {
     @Test
     public void unlockSequenceIsDerivedPersistedAndLeavesRecoveryPinUntouched() throws Exception {
         char[] oldPin = "704918".toCharArray();
-        char[] sequence = "UURRDDLULRDU".toCharArray();
+        char[] sequence = "UURRDDLULR".toCharArray();
         LauncherState first = new LauncherState(file);
         assertTrue(first.setPin(oldPin));
         Properties before = readProperties();
@@ -198,9 +200,9 @@ public class LauncherStateTest {
         LauncherState reloaded = new LauncherState(file);
         assertTrue(reloaded.isUnlockSequenceConfigured());
         assertEquals(LauncherState.PinResult.MATCH,
-                reloaded.verifyUnlockSequence("UURRDDLULRDU".toCharArray(), 1_000L));
+                reloaded.verifyUnlockSequence("UURRDDLULR".toCharArray(), 1_000L));
         assertEquals(LauncherState.PinResult.FAILED,
-                reloaded.verifyUnlockSequence("UURRDDLULRDL".toCharArray(), 2_000L));
+                reloaded.verifyUnlockSequence("UURRDDLULL".toCharArray(), 2_000L));
         assertEquals(LauncherState.PinResult.MATCH, reloaded.verifyPin(oldPin.clone(), 3_000L));
     }
 
@@ -267,15 +269,47 @@ public class LauncherStateTest {
     }
 
     @Test
-    public void sequenceValidationAcceptsOnlyTenToSixteenDirections() {
+    public void newSequencesAcceptOnlyFourToTenMoves() {
         assertFalse(LauncherState.validUnlockSequence(null));
-        assertFalse(LauncherState.validUnlockSequence("UDLRUDLRU".toCharArray()));
+        assertFalse(LauncherState.validUnlockSequence("UDL".toCharArray()));
+        assertTrue(LauncherState.validUnlockSequence("UDLR".toCharArray()));
         assertTrue(LauncherState.validUnlockSequence("UDLRUDLRUD".toCharArray()));
-        assertTrue(LauncherState.validUnlockSequence("UDLRUDLRUDLRUDLR".toCharArray()));
-        assertFalse(LauncherState.validUnlockSequence("UDLRUDLRUDLRUDLRU".toCharArray()));
-        assertFalse(LauncherState.validUnlockSequence("UDLRUDLRU1".toCharArray()));
+        assertFalse(LauncherState.validUnlockSequence("UDLRUDLRUDL".toCharArray()));
+        assertFalse(LauncherState.validUnlockSequence("UDLR1".toCharArray()));
         assertTrue(LauncherState.sameUnlockSequence("UDLRUDLRUD".toCharArray(), "UDLRUDLRUD".toCharArray()));
         assertFalse(LauncherState.sameUnlockSequence("UDLRUDLRUD".toCharArray(), "UDLRUDLRUU".toCharArray()));
+    }
+
+    @Test
+    public void rejectsNewElevenMoveSequenceWithoutChangingExistingCredential() throws Exception {
+        LauncherState state = new LauncherState(file);
+        assertTrue(state.setUnlockSequence("UDLR".toCharArray()));
+        String previousHash = readProperty("unlock_sequence_hash");
+        assertFalse(state.setUnlockSequence("UDLRUDLRUDL".toCharArray()));
+        assertEquals(previousHash, readProperty("unlock_sequence_hash"));
+        assertEquals(LauncherState.PinResult.MATCH,
+                new LauncherState(file).verifyUnlockSequence("UDLR".toCharArray(), 1_000L));
+    }
+
+    @Test
+    public void authenticatesLegacyElevenToSixteenMoveSequences() throws Exception {
+        char[] legacyEleven = "UDLRUDLRUDL".toCharArray();
+        writeLegacySequenceCredential(legacyEleven);
+        LauncherState elevenState = new LauncherState(file);
+        assertTrue(elevenState.isUnlockSequenceConfigured());
+        assertEquals(LauncherState.PinResult.MATCH,
+                elevenState.verifyUnlockSequence(legacyEleven.clone(), 1_000L));
+
+        char[] legacySixteen = "UDLRUDLRUDLRUDLR".toCharArray();
+        writeLegacySequenceCredential(legacySixteen);
+        LauncherState sixteenState = new LauncherState(file);
+        assertTrue(sixteenState.isUnlockSequenceConfigured());
+        assertEquals(LauncherState.PinResult.MATCH,
+                sixteenState.verifyUnlockSequence(legacySixteen.clone(), 2_000L));
+        assertEquals(LauncherState.PinResult.INVALID,
+                sixteenState.verifyUnlockSequence("UDL".toCharArray(), 3_000L));
+        assertEquals(LauncherState.PinResult.INVALID,
+                sixteenState.verifyUnlockSequence("UDLRUDLRUDLRUDLRU".toCharArray(), 4_000L));
     }
 
     @Test
@@ -294,5 +328,32 @@ public class LauncherStateTest {
 
     private void writeProperties(Properties properties) throws Exception {
         try (FileOutputStream out = new FileOutputStream(file)) { properties.store(out, "test fixture"); }
+    }
+
+    private String readProperty(String key) throws Exception {
+        return readProperties().getProperty(key);
+    }
+
+    private void writeLegacySequenceCredential(char[] sequence) throws Exception {
+        byte[] salt = new byte[16];
+        Arrays.fill(salt, (byte) 0x5a);
+        char[] password = sequence.clone();
+        PBEKeySpec spec = new PBEKeySpec(password, salt, LauncherState.PIN_ITERATIONS, 256);
+        byte[] hash;
+        try {
+            hash = SecretKeyFactory.getInstance("PBKDF2WithHmacSHA256").generateSecret(spec).getEncoded();
+        } finally {
+            spec.clearPassword();
+            Arrays.fill(password, '\0');
+        }
+        Properties stored = new Properties();
+        stored.setProperty("unlock_sequence_salt", java.util.Base64.getEncoder().encodeToString(salt));
+        stored.setProperty("unlock_sequence_hash", java.util.Base64.getEncoder().encodeToString(hash));
+        stored.setProperty("unlock_sequence_configured", "true");
+        stored.setProperty("failed_attempts", "0");
+        stored.setProperty("locked_until", "0");
+        writeProperties(stored);
+        Arrays.fill(salt, (byte) 0);
+        Arrays.fill(hash, (byte) 0);
     }
 }

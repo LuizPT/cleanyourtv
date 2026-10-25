@@ -24,6 +24,9 @@ final class LauncherState {
     static final int PIN_MIN = 4;
     static final int PIN_MAX = 6;
     static final int PIN_ITERATIONS = 100_000;
+    static final int UNLOCK_SEQUENCE_MIN_MOVES = 4;
+    static final int UNLOCK_SEQUENCE_MAX_MOVES = 10;
+    static final int UNLOCK_SEQUENCE_MAX_LEGACY_MOVES = 16;
     static final long FIRST_LOCK_MS = 30_000L;
     static final long MAX_LOCK_MS = 30L * 60L * 1000L;
 
@@ -230,9 +233,9 @@ final class LauncherState {
         return verifyCredential(pin, nowMillis, PIN_SALT, PIN_HASH);
     }
 
-    /** Used only by the one-time migration screen before a sequence has been saved. */
+    /** Verifies new credentials and legacy sequences saved with up to 16 moves. */
     synchronized PinResult verifyUnlockSequence(char[] sequence, long nowMillis) {
-        if (!validUnlockSequence(sequence)) return PinResult.INVALID;
+        if (!validUnlockSequenceForAuthentication(sequence)) return PinResult.INVALID;
         return verifyCredential(sequence, nowMillis, SEQUENCE_SALT, SEQUENCE_HASH);
     }
 
@@ -302,7 +305,17 @@ final class LauncherState {
     }
 
     static boolean validUnlockSequence(char[] sequence) {
-        if (sequence == null || sequence.length < 10 || sequence.length > 16) return false;
+        return validUnlockSequenceLength(sequence, UNLOCK_SEQUENCE_MAX_MOVES);
+    }
+
+    /** Accepts the new format and longer sequences saved by releases before the 4–10 move limit. */
+    static boolean validUnlockSequenceForAuthentication(char[] sequence) {
+        return validUnlockSequenceLength(sequence, UNLOCK_SEQUENCE_MAX_LEGACY_MOVES);
+    }
+
+    private static boolean validUnlockSequenceLength(char[] sequence, int maximumLength) {
+        if (sequence == null || sequence.length < UNLOCK_SEQUENCE_MIN_MOVES
+                || sequence.length > maximumLength) return false;
         for (char direction : sequence) {
             if (direction != 'U' && direction != 'D' && direction != 'L' && direction != 'R') return false;
         }

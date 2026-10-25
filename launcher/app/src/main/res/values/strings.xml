@@ -81,16 +81,18 @@
     <string name="sequence_setup_title" tools:ignore="MissingTranslation">Create an unlock sequence</string>
     <string name="sequence_confirm_title" tools:ignore="MissingTranslation">Confirm the unlock sequence</string>
     <string name="sequence_change" tools:ignore="MissingTranslation">Change unlock sequence</string>
-    <string name="sequence_entry_help" tools:ignore="MissingTranslation">Use the arrow keys to enter 10 to 16 moves. OK confirms; Back deletes a move or cancels.</string>
+    <string name="sequence_entry_help" tools:ignore="MissingTranslation">Use the arrow keys to enter 4 to 10 moves. OK confirms; Back deletes a move or cancels.</string>
+    <string name="sequence_auth_entry_help" tools:ignore="MissingTranslation">Enter your saved sequence. Older sequences may contain 11 to 16 moves. OK confirms; Back deletes a move or cancels.</string>
     <string name="sequence_migration_title" tools:ignore="MissingTranslation">Migrate parental protection</string>
     <string name="sequence_migration_help" tools:ignore="MissingTranslation">Enter your current PIN once to set up an unlock sequence.</string>
-    <string name="sequence_length_error" tools:ignore="MissingTranslation">Enter at least 10 moves before confirming.</string>
+    <string name="sequence_length_error" tools:ignore="MissingTranslation">Enter at least 4 moves before confirming.</string>
     <string name="sequence_mismatch" tools:ignore="MissingTranslation">The sequences did not match.</string>
     <string name="sequence_saved" tools:ignore="MissingTranslation">Unlock sequence saved.</string>
     <string name="sequence_incorrect" tools:ignore="MissingTranslation">Incorrect unlock sequence.</string>
     <string name="sequence_unlock_app" tools:ignore="MissingTranslation">Enter your unlock sequence to open %1$s.</string>
     <string name="sequence_manage_app" tools:ignore="MissingTranslation">Enter your unlock sequence to manage %1$s.</string>
     <string name="sequence_progress_accessibility" tools:ignore="MissingTranslation">%1$d of %2$d moves entered</string>
+    <string name="sequence_progress_count" tools:ignore="MissingTranslation">%1$d / %2$d</string>
     <string name="sequence_direction_up" tools:ignore="MissingTranslation">Up</string>
     <string name="sequence_direction_down" tools:ignore="MissingTranslation">Down</string>
     <string name="sequence_direction_left" tools:ignore="MissingTranslation">Left</string>
