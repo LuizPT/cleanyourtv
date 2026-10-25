@@ -36,6 +36,9 @@ final class LauncherState {
     private static final String CONTEXT_HINT_SHOWN = "context_hint_shown";
     private static final String PIN_SALT = "pin_salt";
     private static final String PIN_HASH = "pin_hash";
+    private static final String SEQUENCE_SALT = "unlock_sequence_salt";
+    private static final String SEQUENCE_HASH = "unlock_sequence_hash";
+    private static final String SEQUENCE_CONFIGURED = "unlock_sequence_configured";
     private static final String FAILED_ATTEMPTS = "failed_attempts";
     private static final String LOCKED_UNTIL = "locked_until";
 
@@ -115,6 +118,48 @@ final class LauncherState {
         return storageError || p.getProperty(PIN_SALT) != null || p.getProperty(PIN_HASH) != null;
     }
 
+    /** True only when both parts of the new credential exist and are structurally valid. */
+    synchronized boolean isUnlockSequenceConfigured() {
+        Properties p = read();
+        if (storageError) return false;
+        String salt = p.getProperty(SEQUENCE_SALT);
+        String hash = p.getProperty(SEQUENCE_HASH);
+        String configured = p.getProperty(SEQUENCE_CONFIGURED);
+        boolean initialized = "true".equals(configured);
+        if (configured != null && !initialized && !"false".equals(configured)) {
+            storageError = true;
+            return false;
+        }
+        if (salt == null && hash == null) {
+            if (initialized) storageError = true;
+            return false;
+        }
+        if (!initialized || salt == null || hash == null) {
+            storageError = true;
+            return false;
+        }
+        try {
+            byte[] decodedSalt = java.util.Base64.getDecoder().decode(salt);
+            byte[] decodedHash = java.util.Base64.getDecoder().decode(hash);
+            boolean valid = decodedSalt.length == 16 && decodedHash.length == 32;
+            Arrays.fill(decodedSalt, (byte) 0);
+            Arrays.fill(decodedHash, (byte) 0);
+            if (!valid) storageError = true;
+            return valid;
+        } catch (IllegalArgumentException e) {
+            storageError = true;
+            return false;
+        }
+    }
+
+    /** Legacy PIN remains present for the recovery APK; the current UI authenticates with a sequence. */
+    synchronized boolean hasParentalCredential() {
+        if (isUnlockSequenceConfigured()) return true;
+        if (storageError) return false;
+        boolean hasLegacyPin = isPinConfigured();
+        return hasLegacyPin && !storageError;
+    }
+
     synchronized boolean hasStorageError() {
         return storageError;
     }
@@ -151,11 +196,50 @@ final class LauncherState {
         return saved;
     }
 
+    /** Persists a D-pad sequence without changing or deleting the legacy PIN used by the recovery APK. */
+    synchronized boolean setUnlockSequence(char[] sequence) {
+        if (!validUnlockSequence(sequence)) return false;
+        byte[] salt = new byte[16];
+        random.nextBytes(salt);
+        byte[] hash;
+        try {
+            hash = derive(sequence, salt);
+        } catch (Exception e) {
+            Arrays.fill(salt, (byte) 0);
+            return false;
+        }
+        Properties p = read();
+        if (storageError) {
+            Arrays.fill(salt, (byte) 0);
+            Arrays.fill(hash, (byte) 0);
+            return false;
+        }
+        p.setProperty(SEQUENCE_SALT, java.util.Base64.getEncoder().encodeToString(salt));
+        p.setProperty(SEQUENCE_HASH, java.util.Base64.getEncoder().encodeToString(hash));
+        p.setProperty(SEQUENCE_CONFIGURED, "true");
+        p.setProperty(FAILED_ATTEMPTS, "0");
+        p.setProperty(LOCKED_UNTIL, "0");
+        boolean saved = write(p);
+        Arrays.fill(salt, (byte) 0);
+        Arrays.fill(hash, (byte) 0);
+        return saved;
+    }
+
     synchronized PinResult verifyPin(char[] pin, long nowMillis) {
         if (!validPin(pin)) return PinResult.INVALID;
+        return verifyCredential(pin, nowMillis, PIN_SALT, PIN_HASH);
+    }
+
+    /** Used only by the one-time migration screen before a sequence has been saved. */
+    synchronized PinResult verifyUnlockSequence(char[] sequence, long nowMillis) {
+        if (!validUnlockSequence(sequence)) return PinResult.INVALID;
+        return verifyCredential(sequence, nowMillis, SEQUENCE_SALT, SEQUENCE_HASH);
+    }
+
+    private PinResult verifyCredential(char[] credential, long nowMillis, String saltKey, String hashKey) {
         Properties p = read();
-        String saltText = p.getProperty(PIN_SALT);
-        String hashText = p.getProperty(PIN_HASH);
+        String saltText = p.getProperty(saltKey);
+        String hashText = p.getProperty(hashKey);
         if (storageError) return PinResult.ERROR;
         if (saltText == null && hashText == null) return PinResult.NOT_CONFIGURED;
         if (saltText == null || hashText == null) {
@@ -182,7 +266,7 @@ final class LauncherState {
         }
         byte[] actual;
         try {
-            actual = derive(pin, salt);
+            actual = derive(credential, salt);
         } catch (Exception e) {
             Arrays.fill(salt, (byte) 0);
             Arrays.fill(expected, (byte) 0);
@@ -217,7 +301,23 @@ final class LauncherState {
         return true;
     }
 
+    static boolean validUnlockSequence(char[] sequence) {
+        if (sequence == null || sequence.length < 10 || sequence.length > 16) return false;
+        for (char direction : sequence) {
+            if (direction != 'U' && direction != 'D' && direction != 'L' && direction != 'R') return false;
+        }
+        return true;
+    }
+
     static boolean samePin(char[] first, char[] second) {
+        return sameSecret(first, second);
+    }
+
+    static boolean sameUnlockSequence(char[] first, char[] second) {
+        return sameSecret(first, second);
+    }
+
+    private static boolean sameSecret(char[] first, char[] second) {
         if (first == null || second == null) return false;
         byte[] a = new byte[first.length];
         byte[] b = new byte[second.length];

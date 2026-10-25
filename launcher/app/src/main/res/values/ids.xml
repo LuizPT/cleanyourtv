@@ -1,4 +1,9 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
     <item name="libraryTitle" type="id" />
+    <item name="familyProfileAdult" type="id" />
+    <item name="familyProfileChild" type="id" />
+    <item name="familyProfileXbox" type="id" />
+    <item name="familyManageProfiles" type="id" />
+    <item name="unlock_sequence_progress" type="id" />
 </resources>

@@ -3,18 +3,23 @@ package com.gathin.tvhome;
 import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertNotNull;
+import static org.junit.Assert.assertNull;
 import static org.junit.Assert.assertTrue;
 
 import android.app.Activity;
 import android.app.UiAutomation;
 import android.content.Context;
 import android.content.Intent;
+import android.graphics.Rect;
 import android.os.SystemClock;
 import android.view.KeyEvent;
 import android.view.Gravity;
 import android.view.View;
+import android.view.ViewGroup;
 import android.view.WindowManager;
 import android.view.accessibility.AccessibilityNodeInfo;
+import android.widget.LinearLayout;
+import android.widget.TextView;
 
 import androidx.test.ext.junit.runners.AndroidJUnit4;
 import androidx.test.platform.app.InstrumentationRegistry;
@@ -28,13 +33,16 @@ import java.io.File;
 import java.io.FileInputStream;
 import java.io.FileOutputStream;
 import java.io.IOException;
+import java.lang.reflect.Field;
 import java.security.SecureRandom;
 import java.time.LocalDate;
 import java.time.ZoneId;
 import java.time.ZonedDateTime;
 import java.util.Arrays;
+import java.util.Collections;
+import java.util.Properties;
 
-/** Device-side smoke test for family profile navigation and PIN-gated management. */
+/** Device-side smoke test for family profile navigation and unlock-sequence-gated management. */
 @RunWith(AndroidJUnit4.class)
 public final class FamilyProfileUiTest {
     private File familyFile;
@@ -60,11 +68,12 @@ public final class FamilyProfileUiTest {
         for (int i = 0; i < testPin.length; i++) testPin[i] = (char) ('0' + random.nextInt(10));
         LauncherState launcherState = new LauncherState(pinFile);
         assertTrue("Test PIN setup failed", launcherState.setPin(testPin.clone()));
+        assertTrue("Test sequence setup failed", launcherState.setUnlockSequence("UDLRUDLRUD".toCharArray()));
         FamilyProfileStore familyStore = new FamilyProfileStore(familyFile);
         assertTrue("Family test state setup failed", familyStore.setEnabled(true));
     }
 
-    @Test public void profileSelectorAndManagementUseDpadAndRequirePin() throws Exception {
+    @Test public void profileSelectorAndManagementUseDpadAndRequireSequence() throws Exception {
         Intent intent = new Intent(InstrumentationRegistry.getInstrumentation().getTargetContext(), MainActivity.class)
                 .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_ACTIVITY_CLEAR_TASK);
         activity = InstrumentationRegistry.getInstrumentation().startActivitySync(intent);
@@ -72,15 +81,48 @@ public final class FamilyProfileUiTest {
 
         String selector = awaitVisibleText(getString(R.string.family_select_profile));
         assertTrue(selector.contains(getString(R.string.family_profile_adult)));
-        assertTrue(selector.contains(getString(R.string.family_profile_child)));
-        assertTrue(selector.contains(getString(R.string.family_profile_xbox)));
+        assertTrue(selector.contains(getString(R.string.family_profile_child_short)));
+        assertTrue(selector.contains(getString(R.string.family_profile_xbox_short)));
+        assertProfileCard(R.id.familyProfileAdult);
+        assertProfileCard(R.id.familyProfileChild);
+        assertProfileCard(R.id.familyProfileXbox);
+        assertProfileCardsAreSquareAndHorizontal();
+        AccessibilityNodeInfo manageNode = awaitViewById(R.id.familyManageProfiles);
+        assertNotNull("Profile management action is missing", manageNode);
+        assertTrue("Profile management action must be focusable", manageNode.isFocusable());
+        manageNode.recycle();
 
-        String firstFocus = awaitFocusedText(null);
-        assertNotNull("Profile selector has no focused D-pad option", firstFocus);
+        AccessibilityNodeInfo adultFocus = awaitFocusedViewById(R.id.familyProfileAdult);
+        assertNotNull("Adult profile should receive initial D-pad focus", adultFocus);
+        adultFocus.recycle();
+        AccessibilityNodeInfo childCard = awaitViewById(R.id.familyProfileChild);
+        assertNotNull(childCard);
+        boolean childFocusable = childCard.isFocusable();
+        childCard.recycle();
+        if (childFocusable) {
+            InstrumentationRegistry.getInstrumentation().sendKeyDownUpSync(KeyEvent.KEYCODE_DPAD_RIGHT);
+            AccessibilityNodeInfo childFocus = awaitFocusedViewById(R.id.familyProfileChild);
+            assertNotNull("Right arrow should move from Adult to Child", childFocus);
+            childFocus.recycle();
+            InstrumentationRegistry.getInstrumentation().sendKeyDownUpSync(KeyEvent.KEYCODE_DPAD_LEFT);
+            AccessibilityNodeInfo returnedAdult = awaitFocusedViewById(R.id.familyProfileAdult);
+            assertNotNull("Left arrow should return to Adult", returnedAdult);
+            returnedAdult.recycle();
+        }
         InstrumentationRegistry.getInstrumentation().sendKeyDownUpSync(KeyEvent.KEYCODE_DPAD_DOWN);
-        String nextFocus = awaitFocusedText(firstFocus);
-        assertNotNull("D-pad focus disappeared in the profile selector", nextFocus);
-        assertFalse("D-pad down did not move focus", firstFocus.equals(nextFocus));
+        AccessibilityNodeInfo manageFocus = awaitFocusedViewById(R.id.familyManageProfiles);
+        AccessibilityNodeInfo manageAfterKey = awaitViewById(R.id.familyManageProfiles);
+        Rect manageBounds = new Rect();
+        String manageState = "missing";
+        if (manageAfterKey != null) {
+            manageAfterKey.getBoundsInScreen(manageBounds);
+            manageState = "focusable=" + manageAfterKey.isFocusable() + ", visible="
+                    + manageAfterKey.isVisibleToUser() + ", bounds=" + manageBounds;
+            manageAfterKey.recycle();
+        }
+        assertNotNull("D-pad down should focus Manage profiles; focused node: "
+                + currentFocusDescription() + "; manage: " + manageState, manageFocus);
+        manageFocus.recycle();
         InstrumentationRegistry.getInstrumentation().sendKeyDownUpSync(KeyEvent.KEYCODE_BACK);
         InstrumentationRegistry.getInstrumentation().waitForIdleSync();
 
@@ -96,10 +138,204 @@ public final class FamilyProfileUiTest {
         InstrumentationRegistry.getInstrumentation().sendKeyDownUpSync(KeyEvent.KEYCODE_DPAD_CENTER);
         InstrumentationRegistry.getInstrumentation().waitForIdleSync();
 
-        String authDialog = awaitVisibleText(getString(R.string.pin_entry_help));
-        assertTrue("Management PIN prompt is missing", authDialog.contains(getString(R.string.family_management)));
-        assertFalse("Overlay settings appeared before parental PIN authentication",
+        String authDialog = awaitVisibleText(getString(R.string.sequence_entry_help));
+        assertTrue("Management sequence prompt is missing", authDialog.contains(getString(R.string.family_management)));
+        assertFalse("Overlay settings appeared before sequence authentication",
                 authDialog.contains(getString(R.string.family_time_bar_open_settings)));
+    }
+
+    @Test public void profileManagementActionRequiresParentalSequence() throws Exception {
+        Intent intent = new Intent(InstrumentationRegistry.getInstrumentation().getTargetContext(), MainActivity.class)
+                .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_ACTIVITY_CLEAR_TASK);
+        activity = InstrumentationRegistry.getInstrumentation().startActivitySync(intent);
+        InstrumentationRegistry.getInstrumentation().waitForIdleSync();
+        awaitVisibleText(getString(R.string.family_select_profile));
+
+        AccessibilityNodeInfo manage = awaitViewById(R.id.familyManageProfiles);
+        assertNotNull(manage);
+        try {
+            assertTrue("Manage profiles action should be available",
+                    manage.performAction(AccessibilityNodeInfo.ACTION_CLICK));
+        } finally {
+            manage.recycle();
+        }
+
+        String authDialog = awaitVisibleText(getString(R.string.sequence_entry_help));
+        assertTrue("Manage profiles must authenticate before opening family settings",
+                authDialog.contains(getString(R.string.family_management)));
+        assertFalse("Protected settings appeared before sequence authentication",
+                authDialog.contains(getString(R.string.family_time_bar_open_settings)));
+    }
+
+    @Test public void protectedAppManagementRequiresSequenceBeforeShowingContextActions() throws Exception {
+        LauncherState state = new LauncherState(pinFile);
+        assertTrue(state.saveProtectedApps(Collections.singleton("com.android.settings")));
+        launchMainActivity();
+        awaitVisibleText(getString(R.string.family_select_profile));
+        Activity targetActivity = activity;
+        InstrumentationRegistry.getInstrumentation().runOnMainSync(() -> {
+            try {
+                java.lang.reflect.Method method = MainActivity.class.getDeclaredMethod(
+                        "showAppContextMenu", String.class, String.class, boolean.class);
+                method.setAccessible(true);
+                method.invoke(targetActivity, "com.android.settings", "Settings", false);
+            } catch (Exception e) {
+                throw new AssertionError("Could not open protected app context path", e);
+            }
+        });
+
+        String prompt = awaitVisibleText(getString(R.string.sequence_entry_help));
+        assertFalse("Protected app actions must stay hidden until sequence authentication",
+                prompt.contains(getString(R.string.context_unprotect_sequence)));
+        InstrumentationRegistry.getInstrumentation().sendKeyDownUpSync(KeyEvent.KEYCODE_BACK);
+    }
+
+    @Test public void adultAuthenticationCapturesOnlyDpadMovesAndBackDeletesTheLastMove() throws Exception {
+        Intent intent = new Intent(InstrumentationRegistry.getInstrumentation().getTargetContext(), MainActivity.class)
+                .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_ACTIVITY_CLEAR_TASK);
+        activity = InstrumentationRegistry.getInstrumentation().startActivitySync(intent);
+        InstrumentationRegistry.getInstrumentation().waitForIdleSync();
+        awaitVisibleText(getString(R.string.family_select_profile));
+
+        AccessibilityNodeInfo adult = awaitViewById(R.id.familyProfileAdult);
+        assertNotNull("Adult profile must be selectable when parental authentication is configured", adult);
+        try {
+            assertTrue(adult.performAction(AccessibilityNodeInfo.ACTION_CLICK));
+        } finally {
+            adult.recycle();
+        }
+
+        awaitVisibleText(getString(R.string.sequence_entry_help));
+        AccessibilityNodeInfo progress = awaitViewById(R.id.unlock_sequence_progress);
+        assertNotNull("Sequence progress dots are missing", progress);
+        String emptyProgress = String.valueOf(progress.getText());
+        assertTrue("Progress should contain only neutral dot indicators", emptyProgress.matches("[●○ ]+"));
+        progress.recycle();
+
+        int[] moves = {KeyEvent.KEYCODE_DPAD_UP, KeyEvent.KEYCODE_DPAD_DOWN,
+                KeyEvent.KEYCODE_DPAD_LEFT, KeyEvent.KEYCODE_DPAD_RIGHT,
+                KeyEvent.KEYCODE_DPAD_UP, KeyEvent.KEYCODE_DPAD_DOWN,
+                KeyEvent.KEYCODE_DPAD_LEFT, KeyEvent.KEYCODE_DPAD_RIGHT,
+                KeyEvent.KEYCODE_DPAD_UP};
+        for (int move : moves) InstrumentationRegistry.getInstrumentation().sendKeyDownUpSync(move);
+        InstrumentationRegistry.getInstrumentation().sendKeyDownUpSync(KeyEvent.KEYCODE_BACK);
+        AccessibilityNodeInfo afterDelete = awaitViewById(R.id.unlock_sequence_progress);
+        assertNotNull(afterDelete);
+        assertTrue("Back must delete only the last move", String.valueOf(afterDelete.getContentDescription()).contains("8"));
+        afterDelete.recycle();
+
+        InstrumentationRegistry.getInstrumentation().sendKeyDownUpSync(KeyEvent.KEYCODE_DPAD_UP);
+        InstrumentationRegistry.getInstrumentation().sendKeyDownUpSync(KeyEvent.KEYCODE_DPAD_DOWN);
+        InstrumentationRegistry.getInstrumentation().sendKeyDownUpSync(KeyEvent.KEYCODE_DPAD_CENTER);
+        InstrumentationRegistry.getInstrumentation().waitForIdleSync();
+        assertNull("Correct sequence should authorize the Adult profile", awaitViewById(R.id.unlock_sequence_progress));
+    }
+
+    @Test public void legacyPinMigratesOnceAndIsNotOfferedAfterSequenceActivation() throws Exception {
+        Properties before = readProperties(pinFile);
+        String legacyHash = before.getProperty("pin_hash");
+        before.remove("unlock_sequence_salt");
+        before.remove("unlock_sequence_hash");
+        before.remove("unlock_sequence_configured");
+        writeProperties(pinFile, before);
+
+        launchMainActivity();
+        awaitVisibleText(getString(R.string.family_select_profile));
+        clickView(R.id.familyProfileAdult);
+        awaitVisibleText(getString(R.string.sequence_migration_help));
+        for (char digit : testPin) clickExactText(Character.toString(digit));
+        clickExactText(getString(R.string.confirm));
+
+        awaitVisibleText(getString(R.string.sequence_setup_title));
+        enterSequence("UDLRUDLRUD");
+        InstrumentationRegistry.getInstrumentation().sendKeyDownUpSync(KeyEvent.KEYCODE_DPAD_CENTER);
+        awaitVisibleText(getString(R.string.sequence_confirm_title));
+        assertFalse("A new sequence must not be enabled before confirmation",
+                readProperties(pinFile).containsKey("unlock_sequence_hash"));
+        enterSequence("UDLRUDLRUD");
+        InstrumentationRegistry.getInstrumentation().sendKeyDownUpSync(KeyEvent.KEYCODE_DPAD_CENTER);
+        InstrumentationRegistry.getInstrumentation().waitForIdleSync();
+
+        LauncherState migrated = new LauncherState(pinFile);
+        assertTrue("Sequence should be active only after it is saved", migrated.isUnlockSequenceConfigured());
+        assertEquals(LauncherState.PinResult.MATCH,
+                migrated.verifyUnlockSequence("UDLRUDLRUD".toCharArray(), System.currentTimeMillis()));
+        assertEquals("The recovery PIN hash must survive migration", legacyHash,
+                readProperties(pinFile).getProperty("pin_hash"));
+
+        InstrumentationRegistry.getInstrumentation().runOnMainSync(activity::finish);
+        InstrumentationRegistry.getInstrumentation().waitForIdleSync();
+        launchMainActivity();
+        awaitVisibleText(getString(R.string.family_select_profile));
+        clickView(R.id.familyProfileAdult);
+        awaitVisibleText(getString(R.string.sequence_entry_help));
+        assertFalse("The active sequence prompt must not show the legacy numeric keypad",
+                hasExactText("0"));
+    }
+
+    private void launchMainActivity() {
+        Intent intent = new Intent(InstrumentationRegistry.getInstrumentation().getTargetContext(), MainActivity.class)
+                .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_ACTIVITY_CLEAR_TASK);
+        activity = InstrumentationRegistry.getInstrumentation().startActivitySync(intent);
+        InstrumentationRegistry.getInstrumentation().waitForIdleSync();
+    }
+
+    private void enterSequence(String sequence) {
+        for (char direction : sequence.toCharArray()) {
+            int key = direction == 'U' ? KeyEvent.KEYCODE_DPAD_UP
+                    : direction == 'D' ? KeyEvent.KEYCODE_DPAD_DOWN
+                    : direction == 'L' ? KeyEvent.KEYCODE_DPAD_LEFT : KeyEvent.KEYCODE_DPAD_RIGHT;
+            InstrumentationRegistry.getInstrumentation().sendKeyDownUpSync(key);
+        }
+    }
+
+    private void clickView(int id) throws Exception {
+        AccessibilityNodeInfo node = awaitViewById(id);
+        assertNotNull(node);
+        try { assertTrue(node.performAction(AccessibilityNodeInfo.ACTION_CLICK)); }
+        finally { node.recycle(); }
+    }
+
+    private void clickExactText(String expected) throws Exception {
+        AccessibilityNodeInfo root = InstrumentationRegistry.getInstrumentation().getUiAutomation().getRootInActiveWindow();
+        assertNotNull("No active accessibility window while looking for " + expected, root);
+        try {
+            for (AccessibilityNodeInfo node : root.findAccessibilityNodeInfosByText(expected)) {
+                if (node.getText() != null && expected.contentEquals(node.getText())) {
+                    try { assertTrue("Could not click " + expected, node.performAction(AccessibilityNodeInfo.ACTION_CLICK)); }
+                    finally { node.recycle(); }
+                    return;
+                }
+                node.recycle();
+            }
+        } finally { root.recycle(); }
+        throw new AssertionError("No exact visible button with text: " + expected);
+    }
+
+    private boolean hasExactText(String expected) {
+        AccessibilityNodeInfo root = InstrumentationRegistry.getInstrumentation().getUiAutomation().getRootInActiveWindow();
+        if (root == null) return false;
+        try {
+            for (AccessibilityNodeInfo node : root.findAccessibilityNodeInfosByText(expected)) {
+                boolean exact = node.getText() != null && expected.contentEquals(node.getText());
+                node.recycle();
+                if (exact) return true;
+            }
+            return false;
+        } finally { root.recycle(); }
+    }
+
+    private static Properties readProperties(File file) throws IOException {
+        Properties properties = new Properties();
+        try (FileInputStream in = new FileInputStream(file)) { properties.load(in); }
+        return properties;
+    }
+
+    private static void writeProperties(File file, Properties properties) throws IOException {
+        try (FileOutputStream out = new FileOutputStream(file)) {
+            properties.store(out, "instrumentation fixture");
+            out.getFD().sync();
+        }
     }
 
     @Test public void timeOverlayWindowCannotTakeDpadOrPointerInput() {
@@ -126,10 +362,71 @@ public final class FamilyProfileUiTest {
 
         FamilyTimeOverlay overlay = new FamilyTimeOverlay(target);
         boolean permission = FamilyTimeOverlay.hasPermission(target);
-        boolean attached = overlay.update(overlayStore.snapshot(now.toLocalDate()),
-                now.toLocalDate(), true, true, null);
-        assertEquals("Overlay visibility must follow Android's explicit app-op", permission, attached);
-        overlay.hide();
+        boolean[] attached = new boolean[1];
+        try {
+            InstrumentationRegistry.getInstrumentation().runOnMainSync(() -> attached[0] = overlay.update(
+                    overlayStore.snapshot(now.toLocalDate()), now.toLocalDate(), true, true, null));
+            assertEquals("Overlay visibility must follow Android's explicit app-op", permission, attached[0]);
+        } finally {
+            InstrumentationRegistry.getInstrumentation().runOnMainSync(overlay::hide);
+        }
+    }
+
+    @Test public void compactTimeOverlayShowsOneSummaryAndRefreshesProgress() throws Exception {
+        Context target = InstrumentationRegistry.getInstrumentation().getTargetContext();
+        assertTrue("The emulator test requires the overlay app-op to be granted",
+                FamilyTimeOverlay.hasPermission(target));
+        FamilyProfileStore overlayStore = new FamilyProfileStore(overlayTestFile);
+        ZonedDateTime now = ZonedDateTime.now(ZoneId.of("Europe/Lisbon"));
+        long wall = now.toInstant().toEpochMilli();
+        long elapsed = SystemClock.elapsedRealtime();
+        long uptime = SystemClock.uptimeMillis();
+        assertTrue(overlayStore.setEnabled(true));
+        assertTrue(overlayStore.startSession(FamilyProfileStore.Profile.CHILD_TV,
+                now.toLocalDate(), wall, elapsed, uptime, true));
+        assertTrue(overlayStore.setSessionForeground(true, "test.tv.app", now.toLocalDate(),
+                wall, elapsed, uptime).saved);
+
+        FamilyTimeOverlay overlay = new FamilyTimeOverlay(target);
+        try {
+            boolean[] attached = new boolean[1];
+            InstrumentationRegistry.getInstrumentation().runOnMainSync(() -> attached[0] = overlay.update(
+                    overlayStore.snapshot(now.toLocalDate()), now.toLocalDate(), true, true, null));
+            assertTrue("Active child session should attach the time bar", attached[0]);
+
+            LinearLayout card = field(overlay, "card", LinearLayout.class);
+            assertEquals("One summary row, progress track, and hidden notice", 3, card.getChildCount());
+            assertTrue("Card width should be compact", field(overlay, "layoutParams",
+                    WindowManager.LayoutParams.class).width <= Math.round(300f
+                    * target.getResources().getDisplayMetrics().density));
+            TextView used = field(overlay, "usedText", TextView.class);
+            TextView separator = field(overlay, "separatorText", TextView.class);
+            TextView remaining = field(overlay, "remainingText", TextView.class);
+            assertEquals(View.VISIBLE, used.getVisibility());
+            assertEquals(View.VISIBLE, separator.getVisibility());
+            assertEquals(View.VISIBLE, remaining.getVisibility());
+            assertFalse("Profile label must not be part of the overlay description",
+                    card.getContentDescription().toString().contains(target.getString(R.string.family_profile_child)));
+
+            View progressTrack = field(overlay, "progressTrack", View.class);
+            assertEquals(Math.round(4f * target.getResources().getDisplayMetrics().density),
+                    progressTrack.getLayoutParams().height);
+            int before = intField(progressTrack, "progress");
+            CharSequence beforeSummary = used.getText();
+
+            long fiveMinutes = 5L * FamilyTimePolicy.MINUTE_MS;
+            assertTrue(overlayStore.setSessionForeground(true, "test.tv.app", now.toLocalDate(),
+                    wall + fiveMinutes, elapsed + fiveMinutes, uptime + fiveMinutes).saved);
+            FamilyProfileStore.Snapshot updated = overlayStore.snapshot(now.toLocalDate());
+            InstrumentationRegistry.getInstrumentation().runOnMainSync(() -> attached[0] = overlay.update(
+                    updated, now.toLocalDate(), true, true, null));
+            assertTrue(attached[0]);
+            assertFalse("Displayed used time should refresh",
+                    beforeSummary.toString().equals(used.getText().toString()));
+            assertTrue("Progress should advance after five minutes", intField(progressTrack, "progress") > before);
+        } finally {
+            InstrumentationRegistry.getInstrumentation().runOnMainSync(overlay::hide);
+        }
     }
 
     @After public void tearDown() throws Exception {
@@ -159,20 +456,103 @@ public final class FamilyProfileUiTest {
         throw new AssertionError("Text not visible in active window: " + expected + "\n" + text);
     }
 
-    private String awaitFocusedText(String differentFrom) throws Exception {
+    private void assertProfileCard(int id) throws Exception {
+        AccessibilityNodeInfo card = awaitViewById(id);
+        assertNotNull("Profile card is missing: " + id, card);
+        try {
+            assertNotNull("Profile card has no accessible description: " + id,
+                    card.getContentDescription());
+        } finally {
+            card.recycle();
+        }
+    }
+
+    private void assertProfileCardsAreSquareAndHorizontal() throws Exception {
+        AccessibilityNodeInfo adult = awaitViewById(R.id.familyProfileAdult);
+        AccessibilityNodeInfo child = awaitViewById(R.id.familyProfileChild);
+        AccessibilityNodeInfo xbox = awaitViewById(R.id.familyProfileXbox);
+        assertNotNull(adult);
+        assertNotNull(child);
+        assertNotNull(xbox);
+        try {
+            Rect adultBounds = new Rect();
+            Rect childBounds = new Rect();
+            Rect xboxBounds = new Rect();
+            adult.getBoundsInScreen(adultBounds);
+            child.getBoundsInScreen(childBounds);
+            xbox.getBoundsInScreen(xboxBounds);
+            assertTrue("Profile cards should be laid out left to right",
+                    adultBounds.left < childBounds.left && childBounds.left < xboxBounds.left);
+            float ratio = (float) adultBounds.width() / Math.max(1, adultBounds.height());
+            assertTrue("Profile cards should remain close to square: " + ratio,
+                    ratio >= 0.85f && ratio <= 1.25f);
+        } finally {
+            adult.recycle();
+            child.recycle();
+            xbox.recycle();
+        }
+    }
+
+    private AccessibilityNodeInfo awaitViewById(int id) throws Exception {
+        Context target = InstrumentationRegistry.getInstrumentation().getTargetContext();
+        String resourceName = target.getResources().getResourceName(id);
         long deadline = SystemClock.uptimeMillis() + 5_000L;
-        String text;
         do {
             InstrumentationRegistry.getInstrumentation().waitForIdleSync();
-            text = focusedText();
-            if (text != null && (differentFrom == null || !differentFrom.equals(text))) return text;
+            AccessibilityNodeInfo root = InstrumentationRegistry.getInstrumentation()
+                    .getUiAutomation().getRootInActiveWindow();
+            if (root != null) {
+                java.util.List<AccessibilityNodeInfo> matches = root.findAccessibilityNodeInfosByViewId(resourceName);
+                root.recycle();
+                if (matches != null && !matches.isEmpty()) {
+                    AccessibilityNodeInfo match = matches.get(0);
+                    for (int i = 1; i < matches.size(); i++) matches.get(i).recycle();
+                    return match;
+                }
+            }
             Thread.sleep(100L);
         } while (SystemClock.uptimeMillis() < deadline);
-        return text;
+        return null;
+    }
+
+    private AccessibilityNodeInfo awaitFocusedViewById(int id) throws Exception {
+        long deadline = SystemClock.uptimeMillis() + 5_000L;
+        do {
+            AccessibilityNodeInfo node = awaitViewById(id);
+            if (node != null && node.isFocused()) return node;
+            if (node != null) node.recycle();
+            Thread.sleep(100L);
+        } while (SystemClock.uptimeMillis() < deadline);
+        return null;
+    }
+
+    private String currentFocusDescription() {
+        AccessibilityNodeInfo root = InstrumentationRegistry.getInstrumentation().getUiAutomation()
+                .getRootInActiveWindow();
+        AccessibilityNodeInfo focused = root == null ? null
+                : root.findFocus(AccessibilityNodeInfo.FOCUS_INPUT);
+        String description = focused == null ? "none"
+                : focused.getViewIdResourceName() + " text=" + focused.getText()
+                        + " contentDescription=" + focused.getContentDescription();
+        if (focused != null) focused.recycle();
+        if (root != null) root.recycle();
+        return description;
     }
 
     private String getString(int resource) {
         return InstrumentationRegistry.getInstrumentation().getTargetContext().getString(resource);
+    }
+
+    private static <T> T field(Object object, String name, Class<T> type) throws Exception {
+        Field field = object.getClass().getDeclaredField(name);
+        field.setAccessible(true);
+        return type.cast(field.get(object));
+    }
+
+    private static int intField(Object object, String name) throws Exception {
+        Field field = object.getClass().getDeclaredField(name);
+        field.setAccessible(true);
+        return field.getInt(object);
     }
 
     private String visibleText() {
@@ -184,41 +564,11 @@ public final class FamilyProfileUiTest {
         return text.toString();
     }
 
-    private String focusedText() {
-        UiAutomation automation = InstrumentationRegistry.getInstrumentation().getUiAutomation();
-        AccessibilityNodeInfo root = automation.getRootInActiveWindow();
-        AccessibilityNodeInfo focused = root == null ? null : root.findFocus(AccessibilityNodeInfo.FOCUS_INPUT);
-        String result = nodeText(focused);
-        if (result == null) result = findFocusedText(root);
-        if (focused != null) focused.recycle();
-        if (root != null) root.recycle();
-        return result;
-    }
-
-    private static String nodeText(AccessibilityNodeInfo node) {
-        if (node == null) return null;
-        CharSequence value = node.getText();
-        return value == null ? node.getClassName().toString() : value.toString();
-    }
-
     private static void appendText(AccessibilityNodeInfo node, StringBuilder output) {
         if (node == null) return;
         CharSequence value = node.getText();
         if (value != null) output.append(value).append('\n');
         for (int i = 0; i < node.getChildCount(); i++) appendText(node.getChild(i), output);
-    }
-
-    private static String findFocusedText(AccessibilityNodeInfo node) {
-        if (node == null) return null;
-        if (node.isFocused()) {
-            CharSequence text = node.getText();
-            return text == null ? node.getClassName().toString() : text.toString();
-        }
-        for (int i = 0; i < node.getChildCount(); i++) {
-            String result = findFocusedText(node.getChild(i));
-            if (result != null) return result;
-        }
-        return null;
     }
 
     private static SavedFile save(File file) throws IOException {

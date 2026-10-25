@@ -177,4 +177,122 @@ public class LauncherStateTest {
         assertTrue(LauncherState.samePin("704918".toCharArray(), "704918".toCharArray()));
         assertFalse(LauncherState.samePin("704918".toCharArray(), "704919".toCharArray()));
     }
+
+    @Test
+    public void unlockSequenceIsDerivedPersistedAndLeavesRecoveryPinUntouched() throws Exception {
+        char[] oldPin = "704918".toCharArray();
+        char[] sequence = "UURRDDLULRDU".toCharArray();
+        LauncherState first = new LauncherState(file);
+        assertTrue(first.setPin(oldPin));
+        Properties before = readProperties();
+        String recoveryHash = before.getProperty("pin_hash");
+        String recoverySalt = before.getProperty("pin_salt");
+
+        assertTrue(first.setUnlockSequence(sequence));
+        Properties stored = readProperties();
+        String serialized = new String(Files.readAllBytes(file.toPath()), StandardCharsets.ISO_8859_1);
+        assertFalse("Sequence must not be stored in plain text", serialized.contains(new String(sequence)));
+        assertEquals("Recovery APK PIN hash must remain unchanged", recoveryHash, stored.getProperty("pin_hash"));
+        assertEquals("Recovery APK PIN salt must remain unchanged", recoverySalt, stored.getProperty("pin_salt"));
+
+        LauncherState reloaded = new LauncherState(file);
+        assertTrue(reloaded.isUnlockSequenceConfigured());
+        assertEquals(LauncherState.PinResult.MATCH,
+                reloaded.verifyUnlockSequence("UURRDDLULRDU".toCharArray(), 1_000L));
+        assertEquals(LauncherState.PinResult.FAILED,
+                reloaded.verifyUnlockSequence("UURRDDLULRDL".toCharArray(), 2_000L));
+        assertEquals(LauncherState.PinResult.MATCH, reloaded.verifyPin(oldPin.clone(), 3_000L));
+    }
+
+    @Test
+    public void sequenceAttemptsUsePersistentProgressiveLockoutAcrossReloads() {
+        LauncherState first = new LauncherState(file);
+        assertTrue(first.setUnlockSequence("UDLRUDLRUD".toCharArray()));
+        assertEquals(LauncherState.PinResult.FAILED,
+                first.verifyUnlockSequence("UDLRUDLRUU".toCharArray(), 1_000L));
+        assertEquals(LauncherState.PinResult.FAILED,
+                first.verifyUnlockSequence("UDLRUDLRUU".toCharArray(), 2_000L));
+        assertEquals(LauncherState.PinResult.LOCKED,
+                first.verifyUnlockSequence("UDLRUDLRUU".toCharArray(), 3_000L));
+        assertEquals(LauncherState.PinResult.LOCKED,
+                new LauncherState(file).verifyUnlockSequence("UDLRUDLRUD".toCharArray(), 32_999L));
+        assertEquals(LauncherState.PinResult.MATCH,
+                new LauncherState(file).verifyUnlockSequence("UDLRUDLRUD".toCharArray(), 33_000L));
+    }
+
+    @Test
+    public void replacingSequenceInvalidatesThePreviousOne() {
+        LauncherState first = new LauncherState(file);
+        assertTrue(first.setUnlockSequence("UDLRUDLRUD".toCharArray()));
+        assertTrue(first.setUnlockSequence("RRDDLLUUUR".toCharArray()));
+        LauncherState reloaded = new LauncherState(file);
+        assertEquals(LauncherState.PinResult.FAILED,
+                reloaded.verifyUnlockSequence("UDLRUDLRUD".toCharArray(), 1_000L));
+        assertEquals(LauncherState.PinResult.MATCH,
+                new LauncherState(file).verifyUnlockSequence("RRDDLLUUUR".toCharArray(), 2_000L));
+    }
+
+    @Test
+    public void malformedSequenceCredentialFailsClosedWithoutRemovingLegacyPin() throws Exception {
+        LauncherState first = new LauncherState(file);
+        assertTrue(first.setPin("704918".toCharArray()));
+        assertTrue(first.setUnlockSequence("UDLRUDLRUD".toCharArray()));
+        Properties stored = readProperties();
+        stored.setProperty("unlock_sequence_hash", "not-base64");
+        writeProperties(stored);
+
+        LauncherState reloaded = new LauncherState(file);
+        assertFalse(reloaded.isUnlockSequenceConfigured());
+        assertTrue(reloaded.hasStorageError());
+        assertEquals(LauncherState.PinResult.ERROR,
+                reloaded.verifyUnlockSequence("UDLRUDLRUD".toCharArray(), 1_000L));
+        assertTrue(reloaded.isPinConfigured());
+    }
+
+    @Test
+    public void missingSequenceAfterMigrationCannotFallBackToRecoveryPin() throws Exception {
+        LauncherState first = new LauncherState(file);
+        assertTrue(first.setPin("704918".toCharArray()));
+        assertTrue(first.setUnlockSequence("UDLRUDLRUD".toCharArray()));
+        Properties stored = readProperties();
+        stored.remove("unlock_sequence_salt");
+        stored.remove("unlock_sequence_hash");
+        writeProperties(stored);
+
+        LauncherState reloaded = new LauncherState(file);
+        assertFalse("A completed migration with missing sequence data must fail closed",
+                reloaded.hasParentalCredential());
+        assertTrue(reloaded.hasStorageError());
+        assertTrue("Legacy PIN remains stored for APK recovery", readProperties().getProperty("pin_hash") != null);
+    }
+
+    @Test
+    public void sequenceValidationAcceptsOnlyTenToSixteenDirections() {
+        assertFalse(LauncherState.validUnlockSequence(null));
+        assertFalse(LauncherState.validUnlockSequence("UDLRUDLRU".toCharArray()));
+        assertTrue(LauncherState.validUnlockSequence("UDLRUDLRUD".toCharArray()));
+        assertTrue(LauncherState.validUnlockSequence("UDLRUDLRUDLRUDLR".toCharArray()));
+        assertFalse(LauncherState.validUnlockSequence("UDLRUDLRUDLRUDLRU".toCharArray()));
+        assertFalse(LauncherState.validUnlockSequence("UDLRUDLRU1".toCharArray()));
+        assertTrue(LauncherState.sameUnlockSequence("UDLRUDLRUD".toCharArray(), "UDLRUDLRUD".toCharArray()));
+        assertFalse(LauncherState.sameUnlockSequence("UDLRUDLRUD".toCharArray(), "UDLRUDLRUU".toCharArray()));
+    }
+
+    @Test
+    public void heldDpadKeyRepeatsDoNotAddExtraSequenceMoves() {
+        assertTrue(DpadSequencePolicy.acceptsPress(0, 0));
+        assertFalse(DpadSequencePolicy.acceptsPress(0, 1));
+        assertFalse(DpadSequencePolicy.acceptsPress(0, 4));
+        assertFalse(DpadSequencePolicy.acceptsPress(1, 0));
+    }
+
+    private Properties readProperties() throws Exception {
+        Properties properties = new Properties();
+        try (FileInputStream in = new FileInputStream(file)) { properties.load(in); }
+        return properties;
+    }
+
+    private void writeProperties(Properties properties) throws Exception {
+        try (FileOutputStream out = new FileOutputStream(file)) { properties.store(out, "test fixture"); }
+    }
 }

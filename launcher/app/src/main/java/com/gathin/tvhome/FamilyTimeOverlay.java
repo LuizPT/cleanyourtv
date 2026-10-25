@@ -9,7 +9,6 @@ import android.graphics.drawable.GradientDrawable;
 import android.provider.Settings;
 import android.view.Gravity;
 import android.view.View;
-import android.view.ViewGroup;
 import android.view.WindowManager;
 import android.widget.LinearLayout;
 import android.widget.TextView;
@@ -21,8 +20,8 @@ final class FamilyTimeOverlay {
     private final Context context;
     private final WindowManager windowManager;
     private LinearLayout card;
-    private TextView profileText;
     private TextView usedText;
+    private TextView separatorText;
     private TextView remainingText;
     private TextView noticeText;
     private ProgressTrack progressTrack;
@@ -83,7 +82,6 @@ final class FamilyTimeOverlay {
         long standardMs = FamilyTimePolicy.dailyBudgetMs(policyProfile, day.getDayOfWeek());
         long totalMs = standardMs > Long.MAX_VALUE - extraMs ? Long.MAX_VALUE : standardMs + extraMs;
 
-        profileText.setText(context.getString(xbox ? R.string.family_profile_xbox : R.string.family_profile_child));
         FamilyTimeBarPolicy.Colour colour = FamilyTimeBarPolicy.colourForRemaining(remainingMs);
         int tint = FamilyTimeBarPolicy.argbForRemaining(remainingMs);
         usedText.setText(context.getString(R.string.family_time_bar_used,
@@ -91,8 +89,11 @@ final class FamilyTimeOverlay {
         remainingText.setText(context.getString(R.string.family_time_bar_remaining,
                 FamilyTimeBarPolicy.displayMinutes(remainingMs)));
         FamilyProfileStore.TimeBarContent content = snapshot.timeBarContent;
-        usedText.setVisibility(content == FamilyProfileStore.TimeBarContent.REMAINING ? View.GONE : View.VISIBLE);
-        remainingText.setVisibility(content == FamilyProfileStore.TimeBarContent.USED ? View.GONE : View.VISIBLE);
+        boolean showUsed = content != FamilyProfileStore.TimeBarContent.REMAINING;
+        boolean showRemaining = content != FamilyProfileStore.TimeBarContent.USED;
+        usedText.setVisibility(showUsed ? View.VISIBLE : View.GONE);
+        separatorText.setVisibility(showUsed && showRemaining ? View.VISIBLE : View.GONE);
+        remainingText.setVisibility(showRemaining ? View.VISIBLE : View.GONE);
         progressTrack.setProgress(FamilyTimeBarPolicy.progressPercent(usedMs, totalMs), tint);
         if (notice == null || notice.isEmpty()) {
             noticeText.setVisibility(View.GONE);
@@ -101,10 +102,16 @@ final class FamilyTimeOverlay {
             noticeText.setTextColor(tintForNotice(colour));
             noticeText.setVisibility(View.VISIBLE);
         }
-        StringBuilder description = new StringBuilder(profileText.getText());
-        if (usedText.getVisibility() == View.VISIBLE) description.append(", ").append(usedText.getText());
-        if (remainingText.getVisibility() == View.VISIBLE) description.append(", ").append(remainingText.getText());
-        if (notice != null && !notice.isEmpty()) description.append(", ").append(notice);
+        StringBuilder description = new StringBuilder();
+        if (showUsed) description.append(usedText.getText());
+        if (showRemaining) {
+            if (description.length() > 0) description.append(", ");
+            description.append(remainingText.getText());
+        }
+        if (notice != null && !notice.isEmpty()) {
+            if (description.length() > 0) description.append(", ");
+            description.append(notice);
+        }
         card.setContentDescription(description);
         return attached;
     }
@@ -119,8 +126,8 @@ final class FamilyTimeOverlay {
         }
         attached = false;
         card = null;
-        profileText = null;
         usedText = null;
+        separatorText = null;
         remainingText = null;
         noticeText = null;
         progressTrack = null;
@@ -130,52 +137,45 @@ final class FamilyTimeOverlay {
 
     private void createCard(FamilyProfileStore.TimeBarCorner corner) {
         float density = context.getResources().getDisplayMetrics().density;
-        int pad = dp(density, 18);
+        int horizontalPad = dp(density, 10);
         card = new LinearLayout(context);
         card.setOrientation(LinearLayout.VERTICAL);
-        card.setPadding(pad, dp(density, 13), pad, pad);
-        card.setBackground(roundRect(0xEB18212D, dp(density, 15)));
+        card.setPadding(horizontalPad, dp(density, 7), horizontalPad, dp(density, 7));
+        card.setBackground(roundRect(0xEB18212D, dp(density, 8)));
         card.setFocusable(false);
         card.setClickable(false);
         card.setImportantForAccessibility(View.IMPORTANT_FOR_ACCESSIBILITY_YES);
 
-        LinearLayout header = new LinearLayout(context);
-        header.setGravity(Gravity.CENTER_VERTICAL);
-        profileText = label(14, 0xFFC4CFDC, false);
-        profileText.setText(context.getString(R.string.family_profile_child));
-        header.addView(profileText, new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
-        TextView title = label(12, 0xFFA9B7C8, true);
-        title.setText(R.string.family_time_bar_title);
-        header.addView(title, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT,
-                ViewGroup.LayoutParams.WRAP_CONTENT));
-        card.addView(header, new LinearLayout.LayoutParams(-1, -2));
-
         LinearLayout values = new LinearLayout(context);
         values.setGravity(Gravity.CENTER_VERTICAL);
-        LinearLayout.LayoutParams valuesLp = new LinearLayout.LayoutParams(-1, -2);
-        valuesLp.topMargin = dp(density, 7);
-        usedText = label(21, 0xFFFFFFFF, true);
-        values.addView(usedText, new LinearLayout.LayoutParams(0, -2, 1f));
-        remainingText = label(16, 0xFFE6EDF5, false);
+        usedText = label(16, 0xFFFFFFFF, true);
+        values.addView(usedText, new LinearLayout.LayoutParams(-2, -2));
+        separatorText = label(13, 0xFFA9B7C8, false);
+        separatorText.setText("·");
+        LinearLayout.LayoutParams separatorLp = new LinearLayout.LayoutParams(-2, -2);
+        separatorLp.leftMargin = dp(density, 6);
+        separatorLp.rightMargin = dp(density, 6);
+        values.addView(separatorText, separatorLp);
+        remainingText = label(14, 0xFFE6EDF5, false);
         values.addView(remainingText, new LinearLayout.LayoutParams(-2, -2));
-        card.addView(values, valuesLp);
+        card.addView(values, new LinearLayout.LayoutParams(-1, -2));
 
         progressTrack = new ProgressTrack(context);
-        LinearLayout.LayoutParams progressLp = new LinearLayout.LayoutParams(-1, dp(density, 9));
-        progressLp.topMargin = dp(density, 11);
+        LinearLayout.LayoutParams progressLp = new LinearLayout.LayoutParams(-1, dp(density, 4));
+        progressLp.topMargin = dp(density, 5);
         card.addView(progressTrack, progressLp);
 
-        noticeText = label(14, FamilyTimeBarPolicy.YELLOW_ARGB, true);
+        noticeText = label(12, FamilyTimeBarPolicy.YELLOW_ARGB, true);
         LinearLayout.LayoutParams noticeLp = new LinearLayout.LayoutParams(-1, -2);
-        noticeLp.topMargin = dp(density, 8);
+        noticeLp.topMargin = dp(density, 4);
         card.addView(noticeText, noticeLp);
         noticeText.setVisibility(View.GONE);
 
         int screenWidth = context.getResources().getDisplayMetrics().widthPixels;
-        int width = Math.min(dp(density, 420), Math.max(dp(density, 280), screenWidth - dp(density, 56)));
+        int width = Math.min(dp(density, 300), Math.max(dp(density, 220), screenWidth - dp(density, 40)));
         layoutParams = createLayoutParams(width, WindowManager.LayoutParams.WRAP_CONTENT, corner);
-        layoutParams.x = dp(density, 30);
-        layoutParams.y = dp(density, 30);
+        layoutParams.x = dp(density, 18);
+        layoutParams.y = dp(density, 18);
         attachedCorner = corner;
     }
 
@@ -238,7 +238,7 @@ final class FamilyTimeOverlay {
 
         ProgressTrack(Context context) {
             super(context);
-            radius = 5f * context.getResources().getDisplayMetrics().density;
+            radius = 2f * context.getResources().getDisplayMetrics().density;
             setFocusable(false);
             setClickable(false);
             setImportantForAccessibility(View.IMPORTANT_FOR_ACCESSIBILITY_NO);

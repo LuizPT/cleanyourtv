@@ -62,6 +62,7 @@
     <string name="on_home_dock">On Home dock</string>
     <string name="in_app_list">In app library</string>
     <string name="protected_by_pin">Protected by PIN</string>
+    <string name="protected_by_sequence" tools:ignore="MissingTranslation">Protected by sequence</string>
     <string name="dock_full">Dock full</string>
     <string name="open_app">Open %1$s</string>
     <string name="parental_control">Parental controls</string>
@@ -77,6 +78,31 @@
     <string name="pin_locked">Too many attempts. Try again in %1$d seconds.</string>
     <string name="pin_unlock_app">Enter PIN to open %1$s.</string>
     <string name="pin_manage_app">Enter PIN to manage %1$s.</string>
+    <string name="sequence_setup_title" tools:ignore="MissingTranslation">Create an unlock sequence</string>
+    <string name="sequence_confirm_title" tools:ignore="MissingTranslation">Confirm the unlock sequence</string>
+    <string name="sequence_change" tools:ignore="MissingTranslation">Change unlock sequence</string>
+    <string name="sequence_entry_help" tools:ignore="MissingTranslation">Use the arrow keys to enter 10 to 16 moves. OK confirms; Back deletes a move or cancels.</string>
+    <string name="sequence_migration_title" tools:ignore="MissingTranslation">Migrate parental protection</string>
+    <string name="sequence_migration_help" tools:ignore="MissingTranslation">Enter your current PIN once to set up an unlock sequence.</string>
+    <string name="sequence_length_error" tools:ignore="MissingTranslation">Enter at least 10 moves before confirming.</string>
+    <string name="sequence_mismatch" tools:ignore="MissingTranslation">The sequences did not match.</string>
+    <string name="sequence_saved" tools:ignore="MissingTranslation">Unlock sequence saved.</string>
+    <string name="sequence_incorrect" tools:ignore="MissingTranslation">Incorrect unlock sequence.</string>
+    <string name="sequence_unlock_app" tools:ignore="MissingTranslation">Enter your unlock sequence to open %1$s.</string>
+    <string name="sequence_manage_app" tools:ignore="MissingTranslation">Enter your unlock sequence to manage %1$s.</string>
+    <string name="sequence_progress_accessibility" tools:ignore="MissingTranslation">%1$d of %2$d moves entered</string>
+    <string name="sequence_direction_up" tools:ignore="MissingTranslation">Up</string>
+    <string name="sequence_direction_down" tools:ignore="MissingTranslation">Down</string>
+    <string name="sequence_direction_left" tools:ignore="MissingTranslation">Left</string>
+    <string name="sequence_direction_right" tools:ignore="MissingTranslation">Right</string>
+    <string name="sequence_locked" tools:ignore="MissingTranslation">Too many failed attempts. Try again in %1$d seconds.</string>
+    <string name="sequence_not_saved" tools:ignore="MissingTranslation">Could not save the unlock sequence.</string>
+    <string name="context_protect_sequence" tools:ignore="MissingTranslation">Protect with unlock sequence</string>
+    <string name="context_unprotect_sequence" tools:ignore="MissingTranslation">Remove unlock sequence protection</string>
+    <string name="parental_select_sequence_help" tools:ignore="MissingTranslation">Choose which apps require the unlock sequence. Hidden apps are still managed separately.</string>
+    <string name="protected_apps_not_saved" tools:ignore="MissingTranslation">Could not save protected apps.</string>
+    <string name="app_protected_by_sequence" tools:ignore="MissingTranslation">App protected by unlock sequence.</string>
+    <string name="app_sequence_removed" tools:ignore="MissingTranslation">Unlock sequence protection removed.</string>
     <string name="parental_select_apps">Protected apps</string>
     <string name="parental_select_help">Choose which apps require the PIN. Hidden apps are still hidden separately.</string>
     <string name="protected_apps_saved">Protected apps saved.</string>
@@ -115,13 +141,28 @@
     <string name="family_enable" tools:ignore="MissingTranslation">Turn on Family Edition</string>
     <string name="family_disable" tools:ignore="MissingTranslation">Turn off Family Edition</string>
     <string name="family_pin_required" tools:ignore="MissingTranslation">Set a parental PIN before enabling Family Edition.</string>
-    <string name="family_select_profile" tools:ignore="MissingTranslation">Choose a profile</string>
-    <string name="family_select_profile_help" tools:ignore="MissingTranslation">Launching apps needs Android Usage Access. Adult also requires the parental PIN; Child and Xbox use today’s family limits.</string>
+    <string name="family_sequence_required" tools:ignore="MissingTranslation">Set an unlock sequence before using Family Edition.</string>
+    <string name="family_select_profile" tools:ignore="MissingTranslation">Who’s watching?</string>
+    <string name="family_select_profile_help" tools:ignore="MissingTranslation">Choose a profile to continue.</string>
     <string name="family_profile_adult" tools:ignore="MissingTranslation">Adult</string>
     <string name="family_profile_child" tools:ignore="MissingTranslation">Child (TV)</string>
     <string name="family_profile_xbox" tools:ignore="MissingTranslation">Xbox (HDMI)</string>
+    <string name="family_profile_child_short" tools:ignore="MissingTranslation">Child</string>
+    <string name="family_profile_xbox_short" tools:ignore="MissingTranslation">Xbox</string>
+    <string name="family_profile_adult_hint" tools:ignore="MissingTranslation">Full access · parental PIN</string>
+    <string name="family_profile_adult_sequence_hint" tools:ignore="MissingTranslation">Full access · unlock sequence</string>
+    <string name="family_profile_remaining" tools:ignore="MissingTranslation">%1$s remaining today</string>
+    <string name="family_profile_usage_required" tools:ignore="MissingTranslation">Enable Usage Access</string>
+    <string name="family_profile_session_pending" tools:ignore="MissingTranslation">Adult review required</string>
+    <string name="family_profile_clock_uncertain" tools:ignore="MissingTranslation">Confirm TV time</string>
+    <string name="family_profile_outside_hours" tools:ignore="MissingTranslation">Available 07:00–22:00</string>
+    <string name="family_profile_time_over" tools:ignore="MissingTranslation">Daily limit reached</string>
+    <string name="family_profile_xbox_configure" tools:ignore="MissingTranslation">Choose an HDMI input</string>
+    <string name="family_profile_accessibility" tools:ignore="MissingTranslation">%1$s. %2$s.</string>
+    <string name="family_manage_profiles" tools:ignore="MissingTranslation">Manage profiles</string>
     <string name="family_profile_option" tools:ignore="MissingTranslation">%1$s · %2$s remaining · 07:00–22:00</string>
     <string name="family_adult_auth" tools:ignore="MissingTranslation">Enter the parental PIN for the Adult profile.</string>
+    <string name="family_sequence_adult_auth" tools:ignore="MissingTranslation">Enter your unlock sequence for the Adult profile.</string>
     <string name="family_status" tools:ignore="MissingTranslation">%1$s · %2$s remaining</string>
     <string name="family_unlimited" tools:ignore="MissingTranslation">No time limit</string>
     <string name="family_time_label" tools:ignore="MissingTranslation">%1$s used today · %2$s remaining</string>
@@ -172,8 +213,7 @@
     <string name="family_time_bar_content_both" tools:ignore="MissingTranslation">used and remaining</string>
     <string name="family_time_bar_content_used" tools:ignore="MissingTranslation">used time</string>
     <string name="family_time_bar_content_remaining" tools:ignore="MissingTranslation">remaining time</string>
-    <string name="family_time_bar_title" tools:ignore="MissingTranslation">TIME TODAY</string>
-    <string name="family_time_bar_used" tools:ignore="MissingTranslation">%1$d / %2$d min</string>
+    <string name="family_time_bar_used" tools:ignore="MissingTranslation">%1$d/%2$d</string>
     <string name="family_time_bar_remaining" tools:ignore="MissingTranslation">%1$d min left</string>
     <string name="family_time_bar_child_ended" tools:ignore="MissingTranslation">Your TV time is over for today.</string>
     <string name="family_time_bar_xbox_ended" tools:ignore="MissingTranslation">Your game time is over for today.</string>
