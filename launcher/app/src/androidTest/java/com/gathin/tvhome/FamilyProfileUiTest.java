@@ -29,6 +29,9 @@ import java.io.FileInputStream;
 import java.io.FileOutputStream;
 import java.io.IOException;
 import java.security.SecureRandom;
+import java.time.LocalDate;
+import java.time.ZoneId;
+import java.time.ZonedDateTime;
 import java.util.Arrays;
 
 /** Device-side smoke test for family profile navigation and PIN-gated management. */
@@ -36,8 +39,10 @@ import java.util.Arrays;
 public final class FamilyProfileUiTest {
     private File familyFile;
     private File pinFile;
+    private File overlayTestFile;
     private SavedFile originalFamily;
     private SavedFile originalPin;
+    private SavedFile originalOverlayTestFile;
     private Activity activity;
     private char[] testPin;
 
@@ -45,8 +50,10 @@ public final class FamilyProfileUiTest {
         Context target = InstrumentationRegistry.getInstrumentation().getTargetContext();
         familyFile = new File(target.getFilesDir(), "family-profiles.properties");
         pinFile = new File(target.getFilesDir(), "launcher-state.properties");
+        overlayTestFile = new File(target.getFilesDir(), "family-time-bar-ui-test.properties");
         originalFamily = save(familyFile);
         originalPin = save(pinFile);
+        originalOverlayTestFile = save(overlayTestFile);
 
         SecureRandom random = new SecureRandom();
         testPin = new char[6];
@@ -105,6 +112,26 @@ public final class FamilyProfileUiTest {
         assertEquals(0.75f, params.alpha, 0.001f);
     }
 
+    @Test public void timeOverlayRespectsTheSpecialPermissionAndAnActiveChildSession() {
+        Context target = InstrumentationRegistry.getInstrumentation().getTargetContext();
+        FamilyProfileStore overlayStore = new FamilyProfileStore(overlayTestFile);
+        ZonedDateTime now = ZonedDateTime.now(ZoneId.of("Europe/Lisbon"));
+        long wall = now.toInstant().toEpochMilli();
+        long elapsed = SystemClock.elapsedRealtime();
+        assertTrue(overlayStore.setEnabled(true));
+        assertTrue(overlayStore.startSession(FamilyProfileStore.Profile.CHILD_TV,
+                now.toLocalDate(), wall, elapsed, SystemClock.uptimeMillis(), true));
+        assertTrue(overlayStore.setSessionForeground(true, "test.tv.app", now.toLocalDate(), wall,
+                elapsed, SystemClock.uptimeMillis()).saved);
+
+        FamilyTimeOverlay overlay = new FamilyTimeOverlay(target);
+        boolean permission = FamilyTimeOverlay.hasPermission(target);
+        boolean attached = overlay.update(overlayStore.snapshot(now.toLocalDate()),
+                now.toLocalDate(), true, true, null);
+        assertEquals("Overlay visibility must follow Android's explicit app-op", permission, attached);
+        overlay.hide();
+    }
+
     @After public void tearDown() throws Exception {
         try {
             if (activity != null) {
@@ -115,6 +142,7 @@ public final class FamilyProfileUiTest {
         } finally {
             restore(familyFile, originalFamily);
             restore(pinFile, originalPin);
+            restore(overlayTestFile, originalOverlayTestFile);
             if (testPin != null) Arrays.fill(testPin, '\0');
         }
     }
