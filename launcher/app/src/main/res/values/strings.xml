@@ -1,5 +1,5 @@
 <?xml version="1.0" encoding="utf-8"?>
-<resources>
+<resources xmlns:tools="http://schemas.android.com/tools">
     <string name="app_name">Home</string>
     <string name="inputs">Inputs</string>
     <string name="wifi">Wi-Fi</string>
@@ -109,4 +109,52 @@
     <string name="home_shortcuts_full">Home shortcuts are full. Remove one before adding another.</string>
     <string name="move_app_title">Move %1$s</string>
     <string name="move_app_position">Position %1$d of %2$d</string>
+    <string name="family_profiles" tools:ignore="MissingTranslation">Family profiles</string>
+    <string name="family_management" tools:ignore="MissingTranslation">Family management</string>
+    <string name="family_management_help" tools:ignore="MissingTranslation">Turn profiles on or off, grant Usage Access, view today’s use and choose the Xbox HDMI input.</string>
+    <string name="family_enable" tools:ignore="MissingTranslation">Turn on Family Edition</string>
+    <string name="family_disable" tools:ignore="MissingTranslation">Turn off Family Edition</string>
+    <string name="family_pin_required" tools:ignore="MissingTranslation">Set a parental PIN before enabling Family Edition.</string>
+    <string name="family_select_profile" tools:ignore="MissingTranslation">Choose a profile</string>
+    <string name="family_select_profile_help" tools:ignore="MissingTranslation">Launching apps needs Android Usage Access. Adult also requires the parental PIN; Child and Xbox use today’s family limits.</string>
+    <string name="family_profile_adult" tools:ignore="MissingTranslation">Adult</string>
+    <string name="family_profile_child" tools:ignore="MissingTranslation">Child (TV)</string>
+    <string name="family_profile_xbox" tools:ignore="MissingTranslation">Xbox (HDMI)</string>
+    <string name="family_profile_option" tools:ignore="MissingTranslation">%1$s · %2$s remaining · 07:00–22:00</string>
+    <string name="family_adult_auth" tools:ignore="MissingTranslation">Enter the parental PIN for the Adult profile.</string>
+    <string name="family_status" tools:ignore="MissingTranslation">%1$s · %2$s remaining</string>
+    <string name="family_unlimited" tools:ignore="MissingTranslation">No time limit</string>
+    <string name="family_time_label" tools:ignore="MissingTranslation">%1$s used today · %2$s remaining</string>
+    <string name="family_time_hours" tools:ignore="MissingTranslation">Allowed from 07:00 to 22:00</string>
+    <string name="family_clock_uncertain" tools:ignore="MissingTranslation">The TV clock or a previous session could not be verified. Child and Xbox launches are paused until an adult reviews the time.</string>
+    <string name="family_clock_confirm" tools:ignore="MissingTranslation">Confirm TV time</string>
+    <string name="family_add_time_child" tools:ignore="MissingTranslation">Add 15 minutes to Child</string>
+    <string name="family_add_time_xbox" tools:ignore="MissingTranslation">Add 15 minutes to Xbox</string>
+    <string name="family_time_added" tools:ignore="MissingTranslation">15 minutes added for today.</string>
+    <string name="family_xbox_input" tools:ignore="MissingTranslation">Choose Xbox HDMI input</string>
+    <string name="family_xbox_input_none" tools:ignore="MissingTranslation">No available HDMI inputs were found.</string>
+    <string name="family_xbox_input_saved" tools:ignore="MissingTranslation">Xbox HDMI input saved.</string>
+    <string name="family_xbox_input_required" tools:ignore="MissingTranslation">Choose an HDMI input in Family management first.</string>
+    <string name="family_limitations" tools:ignore="MissingTranslation">With Usage Access, a temporary foreground monitor can return to Home when a limit is reached. Android settings, another launcher or the TV remote can still bypass it. Xbox HDMI time is launcher-led; the system does not let this app switch off or lock the physical input.</string>
+    <string name="family_outside_hours" tools:ignore="MissingTranslation">This profile is available from 07:00 to 22:00.</string>
+    <string name="family_daily_limit" tools:ignore="MissingTranslation">Today’s time limit has been reached.</string>
+    <string name="family_target_blocked" tools:ignore="MissingTranslation">This action is not available in the selected family profile.</string>
+    <string name="family_wrong_input" tools:ignore="MissingTranslation">Only the configured Xbox HDMI input can be opened in the Xbox profile.</string>
+    <string name="family_time_warning" tools:ignore="MissingTranslation">Time remaining: %1$d min.</string>
+    <string name="family_xbox_input_status" tools:ignore="MissingTranslation">%1$s: %2$s</string>
+    <string name="family_storage_error" tools:ignore="MissingTranslation">Family settings could not be read or saved. Launches are paused until storage is available.</string>
+    <string name="family_storage_recovery_title" tools:ignore="MissingTranslation">Recover family settings</string>
+    <string name="family_storage_recovery_help" tools:ignore="MissingTranslation">A private backup of the unreadable family file will be kept. Family Edition will be turned off so apps can be opened again. Your parental PIN and other launcher settings are not changed.</string>
+    <string name="family_storage_recovery_confirm" tools:ignore="MissingTranslation">Back up and disable Family Edition</string>
+    <string name="family_storage_recovered" tools:ignore="MissingTranslation">Family settings were backed up and Family Edition is off. Set it up again when ready.</string>
+    <string name="family_monitor_required" tools:ignore="MissingTranslation">App sessions need Android Usage Access. Enable it in Android settings before launching apps from a family profile.</string>
+    <string name="family_session_recovery" tools:ignore="MissingTranslation">A previous session could not be reconciled. Choose Adult and confirm the TV clock before starting another child session.</string>
+    <string name="family_usage_access_granted" tools:ignore="MissingTranslation">Usage Access is enabled. It reads app foreground events only, not screen text or passwords.</string>
+    <string name="family_usage_access_missing" tools:ignore="MissingTranslation">Usage Access is off. App launches remain blocked until it is enabled.</string>
+    <string name="family_usage_access_open" tools:ignore="MissingTranslation">Open Android Usage Access settings</string>
+    <string name="family_usage_access_settings_unavailable" tools:ignore="MissingTranslation">Android Usage Access settings are not available on this TV.</string>
+    <string name="family_monitor_error" tools:ignore="MissingTranslation">The family session monitor is unavailable. Returning to CleanYourTV.</string>
+    <string name="family_monitor_notification_title" tools:ignore="MissingTranslation">Family session active</string>
+    <string name="family_monitor_notification_text" tools:ignore="MissingTranslation">Monitoring the %1$s profile until Home returns.</string>
+    <string name="family_monitor_channel" tools:ignore="MissingTranslation">Family session</string>
 </resources>

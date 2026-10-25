@@ -12,8 +12,9 @@ android {
         targetSdk 34
         // Keep the existing code so the saved pre-change APK can be restored with `adb install -r`
         // without a version downgrade; Android accepts replacement at the same version code.
-        versionCode 4
-        versionName '2.4'
+        versionCode 5
+        versionName '2.5-family-experimental'
+        testInstrumentationRunner 'androidx.test.runner.AndroidJUnitRunner'
     }
 
     buildTypes {
@@ -38,4 +39,7 @@ dependencies {
     implementation 'androidx.dynamicanimation:dynamicanimation:1.0.0'
     // Test only (never in the APK): plain JVM tests for the module card validators, src/test.
     testImplementation 'junit:junit:4.13.2'
+    // Device-only UI tests; excluded from both debug and release launcher APKs.
+    androidTestImplementation 'androidx.test:runner:1.5.2'
+    androidTestImplementation 'androidx.test.ext:junit:1.1.5'
 }

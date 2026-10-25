@@ -188,6 +188,19 @@
             </LinearLayout>
         </RelativeLayout>
 
+        <TextView
+            android:id="@+id/familyStatus"
+            android:layout_width="wrap_content"
+            android:layout_height="24dp"
+            android:layout_marginStart="4dp"
+            android:layout_marginTop="2dp"
+            android:gravity="center_vertical"
+            android:textColor="#D9FFFFFF"
+            android:textSize="13sp"
+            android:fontFamily="@font/outfit"
+            android:visibility="gone"
+            android:importantForAccessibility="yes" />
+
         <!-- The wrapper clips at the grid's edge; the grid itself must not clip so scaled tiles can overflow their cells. -->
         <FrameLayout
             android:layout_width="match_parent"

@@ -70,4 +70,24 @@ public class FamilyTimePolicyTest {
         assertFalse(decision.allowed);
         assertEquals(0L, decision.remainingMs);
     }
+
+    @Test public void adultClockUncertaintyDoesNotLockOutAdult() {
+        FamilyTimePolicy.Decision decision = FamilyTimePolicy.evaluate(
+                FamilyTimePolicy.Profile.ADULT, at(2026, 10, 23, 23, 0), 0, 0, true);
+        assertTrue(decision.allowed);
+        assertEquals(FamilyTimePolicy.Reason.ALLOWED, decision.reason);
+    }
+
+    @Test public void extensionsAddTimeAndUncertainClockBlocksChildProfiles() {
+        FamilyTimePolicy.Decision extended = FamilyTimePolicy.evaluate(
+                FamilyTimePolicy.Profile.CHILD_TV, at(2026, 10, 23, 12, 0), 60L * 60_000L,
+                15L * 60_000L, false);
+        assertTrue(extended.allowed);
+        assertEquals(15L * 60_000L, extended.remainingMs);
+
+        FamilyTimePolicy.Decision uncertain = FamilyTimePolicy.evaluate(
+                FamilyTimePolicy.Profile.XBOX, at(2026, 10, 24, 12, 0), 0, 0, true);
+        assertFalse(uncertain.allowed);
+        assertEquals(FamilyTimePolicy.Reason.CLOCK_UNCERTAIN, uncertain.reason);
+    }
 }

@@ -1,62 +1,41 @@
-# CleanYourTV — Edição Família (ramo feature/family-profiles)
+# CleanYourTV — Edição Família
 
-> Estado: **em desenvolvimento**. Não instalar na TV nem substituir a Custom Edition 2.4 estável.
-> Base: `custom-2.4` em `92e83f6d551d707cc11d74f9e91334b1b93182eb`.
-> O motor puro `FamilyTimePolicy` já define as regras de horário e quota; **a contabilização real, a interface e a proteção HDMI ainda não foram implementadas**.
+Edição experimental 2.5 no ramo `feature/family-profiles`, derivada da CleanYourTV Custom Edition 2.4. A edição está a ser preparada para Android TV 9 e não substitui nem altera o ramo estável `custom-2.4`.
 
-## Produto e regras
+## Perfis e limites
 
-Ativação expressa por adulto nas definições, com PIN válido já configurado. **Nunca ativar restrições automaticamente após atualizar uma instalação 2.4**.
-
-| Perfil | Identificação | Horário local | Saldo por dia civil |
+| Perfil | Acesso | Horário | Limite diário |
 | --- | --- | --- | --- |
-| Adulto | PIN já existente (4–6 dígitos) | Sem restrição | Ilimitado |
-| Criança (TV) | Seleção sem PIN | 07:00 inclusive a 22:00 exclusive | 60 minutos |
-| Xbox (HDMI) | Seleção sem PIN | 07:00 inclusive a 22:00 exclusive | 60 min. segunda–sexta; 120 min. sábado/domingo |
+| Adulto | PIN parental existente, 4–6 dígitos | Sem restrição | Ilimitado |
+| Criança (TV) | Seleção no launcher | 07:00–22:00, hora de Lisboa | 60 minutos |
+| Xbox (HDMI) | Entrada HDMI escolhida pelo adulto | 07:00–22:00, hora de Lisboa | 60 minutos nos dias úteis; 120 minutos ao fim de semana |
 
-Saldos independentes de Criança e Xbox. Usar `Europe/Lisbon` como fuso horário explícito ou a zona local da TV confirmada; testar mudança entre horário de verão/inverno. Os tempos consumidos no mesmo dia somam-se mesmo entre várias sessões. Limite e janela de horário prevalecem sobre os atalhos existentes. Às 22:00 não iniciar ou continuar uma sessão infantil autorizada **dentro das possibilidades efetivas das APIs disponíveis**.
+O controlo começa desativado e só é ativado por um adulto autenticado. Não existe PIN predefinido. Os saldos de Criança e Xbox são independentes e persistem por dia civil. A gestão familiar permite consultar o consumo, acrescentar tempo e escolher a entrada HDMI.
 
-## Integração no código existente
+## Monitorização de sessões
 
-- Launcher Java/Views, módulo `launcher/app`, minSdk 26, targetSdk 34.
-- `LauncherState`: PIN com PBKDF2, salt e bloqueio progressivo; respetivo ficheiro `launcher-state.properties` deve continuar íntegro, sem migrações destrutivas.
-- `MainActivity`: ações que abrem aplicações passam por `requirePin(...)`; integrar política do perfil antes dessas ações **e também** para cartões, biblioteca, atalhos e ecrã de entradas. Não criar um bypass noutro fluxo.
-- `InputKeyService` e `HomeKeyService`: serviços de acessibilidade existentes, opcionais, com acessos específicos a teclas. Não alargar captura de teclas sem necessidade e consentimento explícito.
-- Entradas HDMI já descobertas por `TvInputManager`; isto permite apresentação/abertura em certos firmwares, **não equivale a bloquear HDMI**.
+Para iniciar aplicações em qualquer perfil familiar, o adulto tem de conceder manualmente **Acesso a dados de utilização** nas Definições Android. A autorização é um acesso especial do sistema e não é concedida pela instalação. O serviço temporário de primeiro plano só funciona durante uma sessão iniciada pelo CleanYourTV e consulta eventos de pacote em primeiro plano; não lê texto, palavras-passe ou conteúdo do ecrã. Não é usado um serviço de acessibilidade para vigiar aplicações. O perfil Adulto não tem quota; esse monitor permite regressar ao launcher e pedir o PIN novamente depois de suspensão.
 
-## Sessões e contabilização
+O serviço consulta a utilização a cada 10 segundos. O contador usa relógios monotónicos, não conta o período de ecrã desligado e divide a utilização à meia-noite em `Europe/Lisbon`. Há avisos aos 10, 5 e 1 minutos. A mudança de aplicação ou o fim do tempo podem ser reconhecidos com até cerca de 10 segundos de atraso.
 
-Definir uma máquina de estados testável: `UNCONFIGURED`, `SELECT_PROFILE`, `ADULT_AUTHENTICATING`, `ADULT_ACTIVE`, `CHILD_ACTIVE`, `XBOX_ACTIVE`, `LOCKED`. Aplicar transições em entradas de sistema, regresso ao HOME, retoma de atividade, fim de tempo, suspensão e reinício. Nunca restaurar silenciosamente `ADULT_ACTIVE` após um arranque novo. Permitir regressar ao seletor e autenticar Adulto mesmo com saldo infantil esgotado.
+Quando o tempo acaba ou começa o período não permitido, o launcher tenta regressar ao Home. Android 9 não permite que uma aplicação comum force o fecho de outra aplicação. Se a firmware não aceitar o regresso automático, o vídeo pode continuar visível enquanto a sessão permanece pendente. Se o Android não confirmar o destino em 30 segundos, se o acesso for revogado ou se ocorrer um erro de armazenamento, a aplicação tenta regressar ao Home e bloqueia novos lançamentos pelo launcher até recuperação adulta.
 
-**Não contabilizar tempo de relógio enquanto o ecrã está desligado ou a TV está em suspensão**; usar `SystemClock.elapsedRealtime()` para duração dentro de uma sessão e fechar fragmentos ao suspender/trocar de perfil. Persistir consumos frequentemente e em cada transição. Reconciliar consumo após morte súbita do processo, sem reduzir o tempo já consumido. Usar data civil local para saldos diários e resistir a alterações manuais de relógio: não permitir recarregamentos gratuitos por recuos de data/hora; em estado temporal incerto, restringir sessões infantis sem impedir desbloqueio adulto.
+Após reinício ou suspensão, o perfil Adulto não é restaurado automaticamente: é pedida nova seleção e o Adulto tem de introduzir o PIN. Se uma sessão tiver ficado sem estado fiável, Criança/Xbox ficam suspensos até o adulto autenticar e rever a hora. Os dados já contabilizados não são removidos; um período em que o processo não conseguiu observar eventos pode ficar por contabilizar e não é estimado como tempo usado. A gestão familiar reutiliza o PIN e a limitação progressiva existentes em `LauncherState`; o seu ficheiro não é migrado nem reescrito. Se o ficheiro familiar ficar ilegível, a gestão autenticada pelo PIN pode guardar uma cópia privada e desativar apenas a Edição Família; o PIN e as restantes definições do launcher permanecem intactos, e o adulto pode configurar a Edição Família novamente.
 
-Se `UsageStatsManager` for necessário para tempo de aplicações fora do launcher, documentar que requer autorização do utilizador e testar o comportamento real no Android TV 9. Não assumir disponibilidade de acessibilidade, overlays ou execução permanente em segundo plano. Sem acesso suficiente, apresentar explicitamente modo de proteção parcial. Não criar uma aplicação que pareça impor limites universais se apenas impede novos lançamentos pelo Home.
+## Limites do controlo
 
-## Xbox / HDMI: etapa experimental separada
+O PIN e os limites aplicam-se apenas a aberturas e sessões iniciadas através do CleanYourTV. Não bloqueiam Definições Android, outro launcher, outras aplicações, assistentes, comandos diretos ou mecanismos do fabricante. Não devem ser tratados como controlo parental do sistema Android inteiro.
 
-O `TvInputManager` permite enumerar entradas passthrough e a aplicação atual abre o seletor. O sinal HDMI e os botões físicos do controlo remoto são controlados, em parte, por componentes do fabricante. Uma aplicação Android comum não pode presumir capacidade para detetar continuamente HDMI ativo, cortá-lo ao fim da quota, nem impedir que o comando volte diretamente a HDMI.
+O perfil Xbox acompanha apenas uma sessão iniciada pelo atalho do launcher. `TvInputManager` permite enumerar algumas entradas, mas Android TV 9 não fornece a uma aplicação comum uma forma portátil de identificar continuamente a entrada HDMI fisicamente ativa, impedir que o comando mude de entrada, cortar o sinal ou encerrar a Xbox. O tempo Xbox não limita sessões abertas diretamente pelo comando ou pelo sistema. Como complemento, configurar os [limites de tempo de utilização da Xbox](https://support.xbox.com/en-US/help/family-online-safety/online-safety/set-screen-time-limits) na conta familiar Microsoft e validar as opções disponíveis na conta e na consola.
 
-Implementar primeiro a **restrição dos caminhos controlados pelo launcher**, contabilizando apenas o tempo que seja possível medir com fiabilidade. Investigar *read-only* os IDs `TvInputInfo`, ações de mudança de input, visibilidade/foco e possíveis eventos no Xiaomi Android TV 9. Testar fisicamente com Xbox e comando original. Se não houver imposição fiável, informar **Limitação HDMI** dentro da app e recomendar controlo complementar da consola (Xbox Family Settings ou equivalente), em vez de fingir um bloqueio completo. Nunca modificar firmware, SELinux, MCU, HDMI-CEC ou privilegiar a app.
+## Validação na televisão
 
-## Interface em PT-PT
+Antes de confiar nos limites, testar na Xiaomi Mi TV 4S com firmware PI.4663:
 
-- Ao abrir Home após arranque/retorno da suspensão: seleção Adulto / Criança / Xbox.
-- Adulto → ecrã de PIN no D-pad, reutilizando validação e cooldown existentes.
-- Criança / Xbox → cartões com saldo restante, horário e aviso aos 10/5/1 minutos; mensagens claras de esgotado/fora de horário; botões sempre navegáveis via D-pad/OK/Voltar.
-- Painel Gestão Familiar protegido por PIN: ativar/desativar, consultar consumo, limites e extensões de tempo, escolher HDMI da Xbox; não enfraquecer biblioteca/reordenação/proteção PIN existentes.
-- PIN guardado só derivado, sem código inicial/predefinido e sem registo em logs.
-- Não mostrar modo de bloqueio como mecanismo intransponível se outro launcher, comando direto HDMI, definições, assistente ou aplicação externa puder contornar o controlo.
+1. Conceder Usage Access nas Definições Android e ativar a Edição Família com o PIN do adulto.
+2. Iniciar uma aplicação pelo launcher em Criança e confirmar que o tempo é contado e que o Home aparece ao chegar ao limite.
+3. Testar regresso com Voltar, botão Home, suspensão/retoma, reinício, revogação do Usage Access e mudança de hora.
+4. Confirmar separadamente o perfil Xbox e os atalhos HDMI. Não inferir que o sinal HDMI foi bloqueado.
+5. Verificar que o adulto consegue sempre autenticar-se e recuperar uma sessão pendente.
 
-## Critérios de aceitação antes de instalar na TV
-
-1. `FamilyTimePolicyTest` e todos os testes antigos passam; compilar e executar lint.
-2. Separação correta dos dois saldos e dos limites de 1h/2h; testar 06:59, 07:00, 21:59, 22:00, sexta, sábado, domingo, segunda e mudança de hora.
-3. Persistência entre reinícios, falhas e atualização, sem perda de opções e PIN anteriores.
-4. Adulto não fica autenticado após suspensão/reboot quando houver seleção obrigatória.
-5. Tentativas de contorno: HOME, INPUT, botões do comando, seleção HDMI manual, apps externas, definições, alterações de data/hora e morte do processo.
-6. Diferenciar nas notas de teste: **verificado em JVM/emulador** vs **verificado na Mi TV 4S real**.
-7. Não publicar/instalar automaticamente. Preservar `custom-2.4` e disponibilizar APK separado para teste deliberado.
-
-## Trabalho a realizar pelo Codex
-
-Continuar diretamente neste ramo com autonomia para decidir, programar, testar e corrigir sem pedidos de autorização intermédios. Concluir a máquina de estados, armazenamento robusto, interfaces e testes; auditar todas as rotas de abertura; investigar e testar HDMI em segurança; entregar APK e evidências, identificando claramente o que permanece por confirmar no hardware. Não é aceitável entregar apenas uma simulação ou afirmar controlo HDMI sem testes físicos.
+Os testes JVM e de interface/emulador verificam política, persistência, foco e fluxos da aplicação; não provam que a firmware da TV aceite iniciar o Home a partir do serviço em segundo plano. Essa validação física continua pendente. O APK experimental não é instalado automaticamente; preservar um caminho de recuperação para voltar à versão estável.

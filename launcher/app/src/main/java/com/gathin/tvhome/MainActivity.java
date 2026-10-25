@@ -33,6 +33,8 @@ import android.os.Build;
 import android.os.Bundle;
 import android.os.Handler;
 import android.os.Looper;
+import android.os.PowerManager;
+import android.os.SystemClock;
 import android.provider.Settings;
 import android.text.SpannableString;
 import android.text.Spanned;
@@ -63,6 +65,9 @@ import androidx.recyclerview.widget.GridLayoutManager;
 import androidx.recyclerview.widget.RecyclerView;
 
 import java.io.File;
+import java.time.LocalDate;
+import java.time.ZoneId;
+import java.time.ZonedDateTime;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Calendar;
@@ -82,6 +87,7 @@ public class MainActivity extends Activity implements AppAdapter.TileListener {
     static final String ACTION_SHOW_INPUTS = "com.gathin.tvhome.action.SHOW_INPUTS";
     static final String ACTION_OPEN_SETTINGS = "com.gathin.tvhome.action.OPEN_SETTINGS";
     private static final long MINUTE_MS = 60_000L;
+    private static final ZoneId FAMILY_ZONE = ZoneId.of("Europe/Lisbon");
     private String liveTvPkg;
     private String liveTvAction;
     private String inputAction;
@@ -90,6 +96,14 @@ public class MainActivity extends Activity implements AppAdapter.TileListener {
 
     private AppAdapter adapter;
     private LauncherState launcherState;
+    private FamilyProfileStore familyStore;
+    private TextView familyStatus;
+    private FamilyTimePolicy.Profile activeFamilyProfile;
+    private boolean familyActivityResumed;
+    private boolean familySelectorShowing;
+    private boolean familyScreenReceiverRegistered;
+    private boolean familyLimitNotified;
+    private boolean familyLaunchInFlight;
     private List<String> defaultDockOrder = Collections.emptyList();
     private Set<String> configuredHiddenApps = Collections.emptySet();
     private Set<String> protectedApps = Collections.emptySet();
@@ -134,6 +148,34 @@ public class MainActivity extends Activity implements AppAdapter.TileListener {
     private PopupWindow openPopup;
 
     private final Handler handler = new Handler(Looper.getMainLooper());
+    private final BroadcastReceiver familyScreenReceiver = new BroadcastReceiver() {
+        @Override public void onReceive(Context context, Intent intent) {
+            if (familyStore == null || intent == null) return;
+            if (!familyStore.isEnabled() && !familyStore.hasPendingSession()) return;
+            boolean on = Intent.ACTION_SCREEN_ON.equals(intent.getAction());
+            if (!on) familyStore.markReturnHomeOnWake();
+            FamilyProfileStore.UsageUpdate update = familyStore.setSessionScreenOn(on, familyToday(),
+                    System.currentTimeMillis(), SystemClock.elapsedRealtime(), SystemClock.uptimeMillis());
+            handleFamilyUsageUpdate(update);
+            if (!on) {
+                activeFamilyProfile = null;
+                updateFamilyStatus();
+            } else if (familyActivityResumed) {
+                handler.postDelayed(MainActivity.this::maybeShowFamilyProfileSelector, 350L);
+            }
+            if (on && familyStore.snapshot(familyToday()).mustReturnHome
+                    && !FamilyUsageAccess.isGranted(MainActivity.this)) {
+                try {
+                    startActivity(new Intent(MainActivity.this, MainActivity.class)
+                            .setAction(Intent.ACTION_MAIN).addCategory(Intent.CATEGORY_HOME)
+                            .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_ACTIVITY_CLEAR_TOP
+                                    | Intent.FLAG_ACTIVITY_SINGLE_TOP));
+                } catch (RuntimeException platformBlockedBackgroundLaunch) {
+                    // Android 9 permits this while the process is alive; newer systems may require Home manually.
+                }
+            }
+        }
+    };
     /** Refreshes the network pill when the connection changes: at boot Wi-Fi often connects after Home is shown. */
     private final ConnectivityManager.NetworkCallback networkCallback = new ConnectivityManager.NetworkCallback() {
         @Override
@@ -185,6 +227,7 @@ public class MainActivity extends Activity implements AppAdapter.TileListener {
         public void run() {
             updateGreeting();
             updateWifiLabel();
+            refreshFamilyProfileAccess(true);
             handler.postDelayed(this, MINUTE_MS);
         }
     };
@@ -197,6 +240,13 @@ public class MainActivity extends Activity implements AppAdapter.TileListener {
         // config.xml, overlaid by config.json from a pushed theme (see Config and tools/theme.sh).
         Config cfg = Config.load(this);
         launcherState = new LauncherState(new File(getFilesDir(), "launcher-state.properties"));
+        familyStore = new FamilyProfileStore(new File(getFilesDir(), "family-profiles.properties"));
+        if (familyStore.hasPendingSession() && !FamilyUsageAccess.isGranted(this)) {
+            familyStore.recoverInterruptedSession(System.currentTimeMillis(), SystemClock.elapsedRealtime(), familyToday());
+        } else if (familyStore.hasPendingSession() && familyStore.isEnabled()) {
+            startFamilySessionMonitor();
+        }
+        registerFamilyScreenReceiver();
         defaultDockOrder = new ArrayList<>(cfg.dockApps);
         protectedApps = new HashSet<>(launcherState.protectedApps());
         COLUMNS = cfg.columns;
@@ -214,6 +264,7 @@ public class MainActivity extends Activity implements AppAdapter.TileListener {
         ambient = findViewById(R.id.ambient);
         heroName = findViewById(R.id.heroName);
         greeting = findViewById(R.id.greeting);
+        familyStatus = findViewById(R.id.familyStatus);
         btnWifi = findViewById(R.id.btnWifi);
         shamsiDate = findViewById(R.id.shamsiDate);
         shamsi = cfg.shamsiDate;
@@ -415,6 +466,8 @@ public class MainActivity extends Activity implements AppAdapter.TileListener {
     @Override
     protected void onResume() {
         super.onResume();
+        familyActivityResumed = true;
+        finishFamilyUsageSession();
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
             registerReceiver(packageReceiver, packageFilter, Context.RECEIVER_NOT_EXPORTED);
         } else {
@@ -426,6 +479,7 @@ public class MainActivity extends Activity implements AppAdapter.TileListener {
         updateGreeting();
         updateWifiLabel();
         updateInputsButton();
+        updateFamilyStatus();
         handler.postDelayed(minuteTick, MINUTE_MS);
     }
 
@@ -457,6 +511,7 @@ public class MainActivity extends Activity implements AppAdapter.TileListener {
             // A newly installed app may have brought a card with it.
             tilesReady = true;
             showCardPrompt();
+            maybeShowFamilyProfileSelector();
         }
     }
 
@@ -489,12 +544,14 @@ public class MainActivity extends Activity implements AppAdapter.TileListener {
             focusTile(pos >= 0 ? pos : returnSlot);
             tilesReady = true;
             showCardPrompt();
+            maybeShowFamilyProfileSelector();
         });
     }
 
     @Override
     protected void onPause() {
         super.onPause();
+        familyActivityResumed = false;
         unregisterReceiver(packageReceiver);
         handler.removeCallbacks(minuteTick);
         // Nothing of ours stays on screen over another app; an undecided prompt simply returns next time.
@@ -514,6 +571,10 @@ public class MainActivity extends Activity implements AppAdapter.TileListener {
     @Override
     protected void onDestroy() {
         super.onDestroy();
+        if (familyScreenReceiverRegistered) {
+            unregisterReceiver(familyScreenReceiver);
+            familyScreenReceiverRegistered = false;
+        }
         ConnectivityManager cm = getSystemService(ConnectivityManager.class);
         TvInputManager tim = (TvInputManager) getSystemService(TV_INPUT_SERVICE);
         if (tim != null) tim.unregisterCallback(inputCallback);
@@ -545,14 +606,12 @@ public class MainActivity extends Activity implements AppAdapter.TileListener {
             open(systemIntent(Settings.ACTION_HOME_SETTINGS));
             return;
         }
-        Runnable launch = () -> {
-            Intent intent = new Intent(Intent.ACTION_MAIN)
-                    .addCategory(Intent.CATEGORY_LEANBACK_LAUNCHER)
-                    .setComponent(entry.component)
-                    .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_ACTIVITY_RESET_TASK_IF_NEEDED);
-            performOpen(intent);
-        };
-        requirePin(entry.pkg, entry.label, false, launch);
+        Intent intent = new Intent(Intent.ACTION_MAIN)
+                .addCategory(Intent.CATEGORY_LEANBACK_LAUNCHER)
+                .setComponent(entry.component)
+                .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_ACTIVITY_RESET_TASK_IF_NEEDED);
+        if (!familyAllowsIntent(intent)) return;
+        requirePin(entry.pkg, entry.label, false, () -> performOpen(intent));
     }
 
     void openFromLibrary(String pkg, ComponentName component, String label) {
@@ -860,6 +919,15 @@ public class MainActivity extends Activity implements AppAdapter.TileListener {
         addToolOption(panel, R.string.parental_control, () -> {
             dialog.dismiss();
             showParentalControl();
+        });
+        addToolOption(panel, R.string.family_profiles, () -> {
+            dialog.dismiss();
+            if (familyStore != null && familyStore.isEnabled()) showFamilyProfileSelector();
+            else showFamilyManagement();
+        });
+        addToolOption(panel, R.string.family_management, () -> {
+            dialog.dismiss();
+            showFamilyManagement();
         });
         if (moduleCards) addToolOption(panel, R.string.module_cards, () -> {
             dialog.dismiss();
@@ -1526,6 +1594,7 @@ public class MainActivity extends Activity implements AppAdapter.TileListener {
     /** The TV's own source-selection panel, for TVs that have no TvInputManager (TCL Android TV 9). */
     private void openSourcePanel() {
         if (!parentalStateAvailable()) return;
+        if (!familyAllowsTarget(FamilyAccessPolicy.Target.UNKNOWN, null)) return;
         Intent i = new Intent(sourcePanelAction);
         ComponentName c = ComponentName.unflattenFromString(sourcePanelService);
         if (c != null) i.setComponent(c);
@@ -1551,6 +1620,7 @@ public class MainActivity extends Activity implements AppAdapter.TileListener {
             if (showError) Toast.makeText(this, R.string.not_available, Toast.LENGTH_SHORT).show();
             return false;
         }
+        if (!familyAllowsIntent(i)) return false;
         String pkg = targetPackage(i);
         if (LauncherState.requiresPin(protectedApps, pkg)) {
             String label = appLabel(pkg);
@@ -1586,12 +1656,834 @@ public class MainActivity extends Activity implements AppAdapter.TileListener {
         return false;
     }
 
+    private LocalDate familyToday() {
+        return LocalDate.now(FAMILY_ZONE);
+    }
+
+    private ZonedDateTime familyNow() {
+        return ZonedDateTime.now(FAMILY_ZONE);
+    }
+
+    private boolean familyEnabled() {
+        return familyStore != null && familyStore.isEnabled();
+    }
+
+    private void startFamilySessionMonitor() {
+        if (familyStore == null || !familyStore.isEnabled() || !familyStore.hasPendingSession()
+                || !FamilyUsageAccess.isGranted(this)) return;
+        try {
+            startForegroundService(new Intent(this, FamilySessionMonitorService.class));
+        } catch (RuntimeException unavailable) {
+            // A pending child session remains fail-closed; Home will ask an adult to review it.
+        }
+    }
+
+    private void openFamilyUsageAccessSettings() {
+        try {
+            startActivity(new Intent(Settings.ACTION_USAGE_ACCESS_SETTINGS));
+        } catch (ActivityNotFoundException | SecurityException unavailable) {
+            Toast.makeText(this, R.string.family_usage_access_settings_unavailable, Toast.LENGTH_LONG).show();
+        }
+    }
+
+    private void registerFamilyScreenReceiver() {
+        IntentFilter filter = new IntentFilter();
+        filter.addAction(Intent.ACTION_SCREEN_OFF);
+        filter.addAction(Intent.ACTION_SCREEN_ON);
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            registerReceiver(familyScreenReceiver, filter, Context.RECEIVER_NOT_EXPORTED);
+        } else {
+            registerReceiver(familyScreenReceiver, filter);
+        }
+        familyScreenReceiverRegistered = true;
+    }
+
+    private boolean isScreenInteractive() {
+        PowerManager power = getSystemService(PowerManager.class);
+        return power == null || power.isInteractive();
+    }
+
+    private boolean familyAllowsIntent(Intent intent) {
+        if (!familyEnabled()) {
+            if (familyStore != null && familyStore.hasStorageError()) {
+                Toast.makeText(this, R.string.family_storage_error, Toast.LENGTH_LONG).show();
+                return false;
+            }
+            return true;
+        }
+        if (intent == null) return familyAllowsTarget(FamilyAccessPolicy.Target.UNKNOWN, null);
+        if (isSettingsIntent(intent)) return familyAllowsTarget(FamilyAccessPolicy.Target.SYSTEM_SETTINGS, null);
+
+        String inputId = passthroughInputId(intent.getData());
+        if (inputId != null) {
+            TvInputInfo info = tvInputInfo(inputId);
+            if (info == null) return familyAllowsTarget(FamilyAccessPolicy.Target.UNKNOWN, inputId);
+            if (info.getType() == TvInputInfo.TYPE_TUNER) {
+                return familyAllowsTarget(FamilyAccessPolicy.Target.TUNER_INPUT, inputId);
+            }
+            if (info.isPassthroughInput()) {
+                return familyAllowsTarget(FamilyAccessPolicy.Target.PASSTHROUGH_INPUT, inputId);
+            }
+            return familyAllowsTarget(FamilyAccessPolicy.Target.UNKNOWN, inputId);
+        }
+
+        String pkg = intent.getComponent() != null ? intent.getComponent().getPackageName() : intent.getPackage();
+        if (pkg == null) {
+            ResolveInfo resolved = getPackageManager().resolveActivity(intent, 0);
+            if (resolved != null && resolved.activityInfo != null) pkg = resolved.activityInfo.packageName;
+        }
+        if (isSettingsPackage(pkg)) return familyAllowsTarget(FamilyAccessPolicy.Target.SYSTEM_SETTINGS, null);
+        return familyAllowsTarget(pkg == null ? FamilyAccessPolicy.Target.UNKNOWN : FamilyAccessPolicy.Target.APP, null);
+    }
+
+    private boolean familyAllowsTarget(FamilyAccessPolicy.Target target, String inputId) {
+        if (!familyEnabled()) {
+            if (familyStore != null && familyStore.hasStorageError()) {
+                Toast.makeText(this, R.string.family_storage_error, Toast.LENGTH_LONG).show();
+                return false;
+            }
+            return true;
+        }
+        if (familyStore.hasStorageError()) {
+            Toast.makeText(this, R.string.family_storage_error, Toast.LENGTH_LONG).show();
+            return false;
+        }
+        if (activeFamilyProfile == null) {
+            showFamilyProfileSelector();
+            return false;
+        }
+        if (!FamilyUsageAccess.isGranted(this)) {
+            Toast.makeText(this, R.string.family_monitor_required, Toast.LENGTH_LONG).show();
+            return false;
+        }
+        ZonedDateTime now = familyNow();
+        LocalDate day = now.toLocalDate();
+        familyStore.observeClock(now.toInstant().toEpochMilli(), SystemClock.elapsedRealtime(), day);
+        if (familyStore.hasStorageError()) {
+            Toast.makeText(this, R.string.family_storage_error, Toast.LENGTH_LONG).show();
+            return false;
+        }
+        FamilyProfileStore.Snapshot snapshot = familyStore.snapshot(day);
+        if (snapshot.sessionPending) {
+            showFamilyDecision(FamilyAccessPolicy.Reason.SESSION_PENDING);
+            return false;
+        }
+        FamilyAccessPolicy.Decision decision = FamilyAccessPolicy.evaluate(activeFamilyProfile, target,
+                inputId, snapshot.xboxInputId, now, activeFamilyProfile == FamilyTimePolicy.Profile.XBOX
+                        ? snapshot.xboxUsedMs : snapshot.childUsedMs,
+                activeFamilyProfile == FamilyTimePolicy.Profile.XBOX
+                        ? snapshot.xboxExtensionMs : snapshot.childExtensionMs,
+                snapshot.clockUncertain);
+        if (decision.allowed) return true;
+        showFamilyDecision(decision.reason);
+        if (decision.reason == FamilyAccessPolicy.Reason.OUTSIDE_HOURS
+                || decision.reason == FamilyAccessPolicy.Reason.DAILY_LIMIT_REACHED
+                || decision.reason == FamilyAccessPolicy.Reason.CLOCK_UNCERTAIN) {
+            activeFamilyProfile = null;
+            updateFamilyStatus();
+        }
+        return false;
+    }
+
+    private void showFamilyDecision(FamilyAccessPolicy.Reason reason) {
+        int message;
+        switch (reason) {
+            case PROFILE_REQUIRED:
+                showFamilyProfileSelector();
+                return;
+            case OUTSIDE_HOURS:
+                message = R.string.family_outside_hours;
+                break;
+            case DAILY_LIMIT_REACHED:
+                message = R.string.family_daily_limit;
+                break;
+            case CLOCK_UNCERTAIN:
+                message = R.string.family_clock_uncertain;
+                break;
+            case MONITOR_REQUIRED:
+                message = R.string.family_monitor_required;
+                break;
+            case SESSION_PENDING:
+                message = R.string.family_session_recovery;
+                break;
+            case WRONG_XBOX_INPUT:
+                message = R.string.family_wrong_input;
+                break;
+            default:
+                message = R.string.family_target_blocked;
+                break;
+        }
+        Toast.makeText(this, message, Toast.LENGTH_LONG).show();
+    }
+
+    private boolean beginFamilyUsageSession(Intent target) {
+        if (!familyEnabled()) return false;
+        if (!FamilyUsageAccess.isGranted(this)) {
+            Toast.makeText(this, R.string.family_monitor_required, Toast.LENGTH_LONG).show();
+            return false;
+        }
+        if (familyStore.hasStorageError()) {
+            Toast.makeText(this, R.string.family_storage_error, Toast.LENGTH_LONG).show();
+            return false;
+        }
+        if (activeFamilyProfile == null) return false;
+        FamilyProfileStore.Profile profile = activeFamilyProfile == FamilyTimePolicy.Profile.ADULT
+                ? FamilyProfileStore.Profile.ADULT
+                : activeFamilyProfile == FamilyTimePolicy.Profile.XBOX
+                    ? FamilyProfileStore.Profile.XBOX : FamilyProfileStore.Profile.CHILD_TV;
+        ZonedDateTime now = familyNow();
+        boolean saved = familyStore.startSession(profile, targetPackage(target), now.toLocalDate(), now.toInstant().toEpochMilli(),
+                SystemClock.elapsedRealtime(), SystemClock.uptimeMillis(), isScreenInteractive());
+        if (!saved) {
+            Toast.makeText(this, familyStore.hasStorageError() ? R.string.family_storage_error
+                    : R.string.family_session_recovery, Toast.LENGTH_LONG).show();
+            return false;
+        }
+        trackedFamilyProfile = activeFamilyProfile;
+        familyLimitNotified = false;
+        try {
+            startForegroundService(new Intent(this, FamilySessionMonitorService.class));
+        } catch (RuntimeException cannotStartMonitor) {
+            abortFamilyUsageSession();
+            Toast.makeText(this, R.string.family_monitor_error, Toast.LENGTH_LONG).show();
+            return false;
+        }
+        return true;
+    }
+
+    private FamilyTimePolicy.Profile trackedFamilyProfile;
+
+    private void finishFamilyUsageSession() {
+        if (familyStore != null && familyStore.hasPendingSession()) {
+            ZonedDateTime now = familyNow();
+            FamilyProfileStore.UsageUpdate update = familyStore.finishSession(now.toLocalDate(),
+                    now.toInstant().toEpochMilli(), SystemClock.elapsedRealtime(), SystemClock.uptimeMillis());
+            handleFamilyUsageUpdate(update);
+            trackedFamilyProfile = null;
+            stopService(new Intent(this, FamilySessionMonitorService.class));
+        }
+        if (familyLaunchInFlight && familyEnabled()) activeFamilyProfile = null;
+        familyLaunchInFlight = false;
+        updateFamilyStatus();
+    }
+
+    private void abortFamilyUsageSession() {
+        if (familyStore == null || !familyStore.hasPendingSession()) return;
+        ZonedDateTime now = familyNow();
+        familyStore.finishSession(now.toLocalDate(), now.toInstant().toEpochMilli(),
+                SystemClock.elapsedRealtime(), SystemClock.uptimeMillis());
+        trackedFamilyProfile = null;
+        stopService(new Intent(this, FamilySessionMonitorService.class));
+    }
+
+    private void handleFamilyUsageUpdate(FamilyProfileStore.UsageUpdate update) {
+        if (update == null) return;
+        if (!update.saved) {
+            Toast.makeText(this, R.string.family_storage_error, Toast.LENGTH_LONG).show();
+            return;
+        }
+        if (!update.warningsMinutes.isEmpty() && update.remainingMs > 0L) {
+            int lowest = Collections.min(update.warningsMinutes);
+            Toast.makeText(this, getString(R.string.family_time_warning, lowest), Toast.LENGTH_LONG).show();
+        }
+        if (trackedFamilyProfile != null && update.remainingMs <= 0L) {
+            if (!familyLimitNotified) {
+                Toast.makeText(this, R.string.family_daily_limit, Toast.LENGTH_LONG).show();
+                familyLimitNotified = true;
+            }
+            activeFamilyProfile = null;
+        }
+        updateFamilyStatus();
+        refreshFamilyProfileAccess(true);
+    }
+
+    private void refreshFamilyProfileAccess(boolean notify) {
+        if (!familyEnabled() || activeFamilyProfile == null || activeFamilyProfile == FamilyTimePolicy.Profile.ADULT) return;
+        ZonedDateTime now = familyNow();
+        LocalDate day = now.toLocalDate();
+        familyStore.observeClock(now.toInstant().toEpochMilli(), SystemClock.elapsedRealtime(), day);
+        if (familyStore.hasStorageError()) {
+            activeFamilyProfile = null;
+            updateFamilyStatus();
+            if (notify) Toast.makeText(this, R.string.family_storage_error, Toast.LENGTH_LONG).show();
+            return;
+        }
+        FamilyProfileStore.Snapshot snapshot = familyStore.snapshot(day);
+        boolean xbox = activeFamilyProfile == FamilyTimePolicy.Profile.XBOX;
+        FamilyAccessPolicy.Decision decision = FamilyAccessPolicy.evaluate(activeFamilyProfile,
+                xbox ? FamilyAccessPolicy.Target.PASSTHROUGH_INPUT : FamilyAccessPolicy.Target.APP,
+                xbox ? snapshot.xboxInputId : null, snapshot.xboxInputId, now,
+                xbox ? snapshot.xboxUsedMs : snapshot.childUsedMs,
+                xbox ? snapshot.xboxExtensionMs : snapshot.childExtensionMs, snapshot.clockUncertain);
+        if (!decision.allowed) {
+            activeFamilyProfile = null;
+            updateFamilyStatus();
+            if (notify) showFamilyDecision(decision.reason);
+            if (familyActivityResumed) handler.postDelayed(this::maybeShowFamilyProfileSelector, 250L);
+        }
+    }
+
+    private String passthroughInputId(Uri uri) {
+        return uri != null && TvContract.isChannelUriForPassthroughInput(uri)
+                ? uri.getLastPathSegment() : null;
+    }
+
+    private TvInputInfo tvInputInfo(String inputId) {
+        try {
+            TvInputManager manager = (TvInputManager) getSystemService(TV_INPUT_SERVICE);
+            return manager == null ? null : manager.getTvInputInfo(inputId);
+        } catch (Exception ignored) {
+            return null;
+        }
+    }
+
+    private boolean isSettingsIntent(Intent intent) {
+        String action = intent.getAction();
+        if (action != null && (action.equals(Settings.ACTION_SETTINGS)
+                || action.equals(Settings.ACTION_WIFI_SETTINGS)
+                || action.equals(Settings.ACTION_HOME_SETTINGS)
+                || action.equals(Settings.ACTION_APPLICATION_DETAILS_SETTINGS)
+                || action.equals(Settings.ACTION_APPLICATION_SETTINGS)
+                || action.equals(Settings.ACTION_MANAGE_APPLICATIONS_SETTINGS)
+                || action.equals(Settings.ACTION_SECURITY_SETTINGS)
+                || action.equals(Settings.ACTION_PRIVACY_SETTINGS)
+                || action.equals(Settings.ACTION_INPUT_METHOD_SETTINGS)
+                || action.equals(Settings.ACTION_DISPLAY_SETTINGS)
+                || action.equals(Settings.ACTION_SOUND_SETTINGS)
+                || action.equals(Settings.ACTION_ACCESSIBILITY_SETTINGS)
+                || action.equals(Settings.ACTION_LOCATION_SOURCE_SETTINGS)
+                || action.equals(Settings.ACTION_DATE_SETTINGS)
+                || action.equals(Settings.ACTION_DEVICE_INFO_SETTINGS)
+                || action.equals(Settings.ACTION_USAGE_ACCESS_SETTINGS))) return true;
+        return isSettingsPackage(intent.getComponent() != null ? intent.getComponent().getPackageName() : intent.getPackage());
+    }
+
+    private boolean isSettingsPackage(String pkg) {
+        return "com.android.settings".equals(pkg) || "com.android.tv.settings".equals(pkg)
+                || "com.google.android.tv.settings".equals(pkg) || "com.xiaomi.mitv.settings".equals(pkg);
+    }
+
+    private void updateFamilyStatus() {
+        if (familyStatus == null) return;
+        if (!familyEnabled() || activeFamilyProfile == null) {
+            familyStatus.setVisibility(View.GONE);
+            return;
+        }
+        LocalDate today = familyToday();
+        FamilyProfileStore.Snapshot snapshot = familyStore.snapshot(today);
+        String profileName;
+        String remaining;
+        if (activeFamilyProfile == FamilyTimePolicy.Profile.ADULT) {
+            profileName = getString(R.string.family_profile_adult);
+            remaining = getString(R.string.family_unlimited);
+        } else {
+            boolean xbox = activeFamilyProfile == FamilyTimePolicy.Profile.XBOX;
+            profileName = getString(xbox ? R.string.family_profile_xbox : R.string.family_profile_child);
+            long ms = snapshot.remainingMs(xbox ? FamilyProfileStore.Profile.XBOX : FamilyProfileStore.Profile.CHILD_TV, today);
+            remaining = android.text.format.DateUtils.formatElapsedTime((ms + 999L) / 1000L);
+        }
+        familyStatus.setText(getString(R.string.family_status, profileName, remaining));
+        familyStatus.setVisibility(View.VISIBLE);
+    }
+
+    private void maybeShowFamilyProfileSelector() {
+        if (!familyEnabled() || activeFamilyProfile != null || !familyActivityResumed || !tilesReady
+                || familySelectorShowing || isFinishing()) return;
+        if (cardPrompt != null && cardPrompt.isShowing()) return;
+        showFamilyProfileSelector();
+    }
+
+    private void showFamilyProfileSelector() {
+        if (!familyEnabled()) return;
+        if (familySelectorShowing || isFinishing()) return;
+        if (familyStore.hasStorageError()) {
+            Toast.makeText(this, R.string.family_storage_error, Toast.LENGTH_LONG).show();
+            return;
+        }
+        familySelectorShowing = true;
+        LocalDate today = familyToday();
+        ZonedDateTime currentTime = familyNow();
+        familyStore.observeClock(currentTime.toInstant().toEpochMilli(), SystemClock.elapsedRealtime(), today);
+        if (familyStore.hasStorageError()) {
+            familySelectorShowing = false;
+            Toast.makeText(this, R.string.family_storage_error, Toast.LENGTH_LONG).show();
+            return;
+        }
+        FamilyProfileStore.Snapshot snapshot = familyStore.snapshot(today);
+
+        Dialog dialog = new Dialog(this);
+        dialog.requestWindowFeature(Window.FEATURE_NO_TITLE);
+        LinearLayout panel = familyPanel();
+        TextView title = familyText(R.string.family_select_profile, 23, Color.WHITE);
+        panel.addView(title, new LinearLayout.LayoutParams(-1, -2));
+        TextView help = familyText(R.string.family_select_profile_help, 14, 0xFFD8DDE5);
+        LinearLayout.LayoutParams helpLp = new LinearLayout.LayoutParams(-1, -2);
+        helpLp.topMargin = dp(4);
+        panel.addView(help, helpLp);
+
+        if (snapshot.clockUncertain) {
+            TextView warning = familyText(R.string.family_clock_uncertain, 14, 0xFFFFD180);
+            LinearLayout.LayoutParams warningLp = new LinearLayout.LayoutParams(-1, -2);
+            warningLp.topMargin = dp(10);
+            panel.addView(warning, warningLp);
+        }
+        if (!FamilyUsageAccess.isGranted(this)) {
+            TextView warning = familyText(R.string.family_monitor_required, 14, 0xFFFFD180);
+            LinearLayout.LayoutParams warningLp = new LinearLayout.LayoutParams(-1, -2);
+            warningLp.topMargin = dp(8);
+            panel.addView(warning, warningLp);
+        } else if (snapshot.sessionPending) {
+            TextView warning = familyText(R.string.family_session_recovery, 14, 0xFFFFD180);
+            LinearLayout.LayoutParams warningLp = new LinearLayout.LayoutParams(-1, -2);
+            warningLp.topMargin = dp(8);
+            panel.addView(warning, warningLp);
+        }
+
+        LinearLayout choices = new LinearLayout(this);
+        choices.setOrientation(LinearLayout.VERTICAL);
+        LinearLayout.LayoutParams choicesLp = new LinearLayout.LayoutParams(-1, -2);
+        choicesLp.topMargin = dp(12);
+        panel.addView(choices, choicesLp);
+
+        boolean adultPin = launcherState.isPinConfigured();
+        TextView adult = familyChoice(getString(R.string.family_profile_adult), adultPin, () -> {
+            dialog.dismiss();
+            familySelectorShowing = false;
+            if (!adultPin) {
+                Toast.makeText(this, R.string.family_pin_required, Toast.LENGTH_LONG).show();
+                return;
+            }
+            authenticate(getString(R.string.family_adult_auth),
+                    () -> selectFamilyProfile(FamilyTimePolicy.Profile.ADULT));
+        });
+        choices.addView(adult, familyChoiceLp());
+
+        FamilyAccessPolicy.Decision child = profileChoiceDecision(FamilyTimePolicy.Profile.CHILD_TV, snapshot, today);
+        long childRemaining = snapshot.remainingMs(FamilyProfileStore.Profile.CHILD_TV, today);
+        TextView childButton = familyChoice(getString(R.string.family_profile_option,
+                        getString(R.string.family_profile_child), durationText(childRemaining)),
+                child.allowed, () -> {
+                    dialog.dismiss();
+                    familySelectorShowing = false;
+                    selectFamilyProfile(FamilyTimePolicy.Profile.CHILD_TV);
+                });
+        choices.addView(childButton, familyChoiceLp());
+
+        boolean hasXboxInput = isConfiguredXboxInput(snapshot.xboxInputId);
+        FamilyAccessPolicy.Decision xbox = profileChoiceDecision(FamilyTimePolicy.Profile.XBOX, snapshot, today);
+        long xboxRemaining = snapshot.remainingMs(FamilyProfileStore.Profile.XBOX, today);
+        TextView xboxButton = familyChoice(getString(R.string.family_profile_option,
+                        getString(R.string.family_profile_xbox), durationText(xboxRemaining)),
+                hasXboxInput && xbox.allowed, () -> {
+                    dialog.dismiss();
+                    familySelectorShowing = false;
+                    selectFamilyProfile(FamilyTimePolicy.Profile.XBOX);
+                });
+        choices.addView(xboxButton, familyChoiceLp());
+
+        if (!adultPin) {
+            TextView pinHint = familyText(R.string.family_pin_required, 13, 0xFFFFD180);
+            LinearLayout.LayoutParams pinLp = new LinearLayout.LayoutParams(-1, -2);
+            pinLp.topMargin = dp(8);
+            panel.addView(pinHint, pinLp);
+        }
+        TextView cancel = familyChoice(getString(R.string.close), true, () -> {
+            dialog.dismiss();
+            familySelectorShowing = false;
+        });
+        LinearLayout.LayoutParams cancelLp = familyChoiceLp();
+        cancelLp.topMargin = dp(8);
+        panel.addView(cancel, cancelLp);
+        dialog.setContentView(panel);
+        configureFamilyDialog(dialog, 0.72f);
+        dialog.setOnCancelListener(d -> familySelectorShowing = false);
+        dialog.show();
+        sizeFamilyDialog(dialog, 0.62f);
+        (adultPin ? adult : child.allowed ? childButton : hasXboxInput && xbox.allowed ? xboxButton : cancel).requestFocus();
+    }
+
+    private FamilyAccessPolicy.Decision profileChoiceDecision(FamilyTimePolicy.Profile profile,
+            FamilyProfileStore.Snapshot snapshot, LocalDate day) {
+        if (profile != FamilyTimePolicy.Profile.ADULT && !FamilyUsageAccess.isGranted(this)) {
+            return FamilyAccessPolicy.blocked(FamilyAccessPolicy.Reason.MONITOR_REQUIRED);
+        }
+        if (profile != FamilyTimePolicy.Profile.ADULT && snapshot.sessionPending) {
+            return FamilyAccessPolicy.blocked(FamilyAccessPolicy.Reason.SESSION_PENDING);
+        }
+        ZonedDateTime now = familyNow();
+        boolean xbox = profile == FamilyTimePolicy.Profile.XBOX;
+        return FamilyAccessPolicy.evaluate(profile,
+                xbox ? FamilyAccessPolicy.Target.PASSTHROUGH_INPUT : FamilyAccessPolicy.Target.APP,
+                xbox ? snapshot.xboxInputId : null, snapshot.xboxInputId, now,
+                xbox ? snapshot.xboxUsedMs : snapshot.childUsedMs,
+                xbox ? snapshot.xboxExtensionMs : snapshot.childExtensionMs, snapshot.clockUncertain);
+    }
+
+    private boolean isConfiguredXboxInput(String id) {
+        if (id == null || id.isEmpty()) return false;
+        TvInputInfo info = tvInputInfo(id);
+        return info != null && info.isPassthroughInput() && info.getType() == TvInputInfo.TYPE_HDMI;
+    }
+
+    private void selectFamilyProfile(FamilyTimePolicy.Profile profile) {
+        if (profile == FamilyTimePolicy.Profile.ADULT) {
+            if (familyStore.hasPendingSession()) {
+                ZonedDateTime now = familyNow();
+                if (!familyStore.recoverInterruptedSession(now.toInstant().toEpochMilli(),
+                        SystemClock.elapsedRealtime(), now.toLocalDate())) {
+                    Toast.makeText(this, R.string.family_storage_error, Toast.LENGTH_LONG).show();
+                    return;
+                }
+                stopService(new Intent(this, FamilySessionMonitorService.class));
+            }
+            familyStore.clearReturnHomeOnWake();
+            activeFamilyProfile = profile;
+            updateFamilyStatus();
+            return;
+        }
+        LocalDate today = familyToday();
+        ZonedDateTime currentTime = familyNow();
+        familyStore.observeClock(currentTime.toInstant().toEpochMilli(), SystemClock.elapsedRealtime(), today);
+        if (familyStore.hasStorageError()) {
+            Toast.makeText(this, R.string.family_storage_error, Toast.LENGTH_LONG).show();
+            return;
+        }
+        FamilyProfileStore.Snapshot snapshot = familyStore.snapshot(today);
+        FamilyAccessPolicy.Decision decision = profileChoiceDecision(profile, snapshot, today);
+        if (!decision.allowed || (profile == FamilyTimePolicy.Profile.XBOX && !isConfiguredXboxInput(snapshot.xboxInputId))) {
+            showFamilyDecision(decision.reason == FamilyAccessPolicy.Reason.ALLOWED
+                    ? FamilyAccessPolicy.Reason.WRONG_XBOX_INPUT : decision.reason);
+            updateFamilyStatus();
+            return;
+        }
+        activeFamilyProfile = profile;
+        updateFamilyStatus();
+    }
+
+    private LinearLayout familyPanel() {
+        LinearLayout panel = new LinearLayout(this);
+        panel.setOrientation(LinearLayout.VERTICAL);
+        int padding = dp(20);
+        panel.setPadding(padding, padding, padding, dp(14));
+        panel.setBackgroundResource(R.drawable.glass_panel);
+        return panel;
+    }
+
+    private TextView familyText(int resource, int sizeSp, int color) {
+        return familyText(getString(resource), sizeSp, color);
+    }
+
+    private TextView familyText(String value, int sizeSp, int color) {
+        TextView text = new TextView(this);
+        text.setText(value);
+        text.setTextColor(color);
+        text.setTextSize(sizeSp);
+        text.setGravity(Gravity.CENTER_VERTICAL);
+        return text;
+    }
+
+    private TextView familyChoice(String value, boolean enabled, Runnable action) {
+        TextView button = new TextView(this);
+        button.setText(value);
+        button.setTextColor(enabled ? Color.WHITE : 0xFF8C929B);
+        button.setTextSize(16);
+        button.setGravity(Gravity.CENTER_VERTICAL);
+        button.setPadding(dp(14), dp(10), dp(14), dp(10));
+        button.setMinHeight(dp(48));
+        button.setBackgroundResource(R.drawable.focus_row_bg);
+        button.setFocusable(enabled);
+        button.setClickable(enabled);
+        button.setEnabled(enabled);
+        button.setAlpha(enabled ? 1f : 0.68f);
+        if (enabled) button.setOnClickListener(v -> action.run());
+        return button;
+    }
+
+    private LinearLayout.LayoutParams familyChoiceLp() {
+        LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(-1, -2);
+        lp.topMargin = dp(5);
+        return lp;
+    }
+
+    private int dp(float value) {
+        return Math.round(value * density);
+    }
+
+    private String durationText(long milliseconds) {
+        return android.text.format.DateUtils.formatElapsedTime((Math.max(0L, milliseconds) + 999L) / 1000L);
+    }
+
+    private void configureFamilyDialog(Dialog dialog, float dim) {
+        dialog.setCanceledOnTouchOutside(false);
+        Window window = dialog.getWindow();
+        if (window != null) {
+            window.setBackgroundDrawable(new ColorDrawable(Color.TRANSPARENT));
+            window.setDimAmount(dim);
+        }
+    }
+
+    private void sizeFamilyDialog(Dialog dialog, float widthFraction) {
+        Window window = dialog.getWindow();
+        if (window != null) window.setLayout(
+                (int) (getResources().getDisplayMetrics().widthPixels * widthFraction),
+                ViewGroup.LayoutParams.WRAP_CONTENT);
+    }
+
+    private void showFamilyManagement() {
+        if (!parentalStateAvailable()) return;
+        familyStore.isEnabled();
+        if (!launcherState.isPinConfigured()) {
+            Toast.makeText(this, R.string.family_pin_required, Toast.LENGTH_LONG).show();
+            return;
+        }
+        if (familyStore.hasStorageError()) {
+            authenticate(getString(R.string.family_storage_recovery_title), this::showFamilyStorageRecovery);
+            return;
+        }
+        authenticate(getString(R.string.family_management), this::showFamilyManagementPanel);
+    }
+
+    private void showFamilyStorageRecovery() {
+        Dialog dialog = new Dialog(this);
+        dialog.requestWindowFeature(Window.FEATURE_NO_TITLE);
+        LinearLayout panel = familyPanel();
+        panel.addView(familyText(R.string.family_storage_recovery_title, 22, Color.WHITE),
+                new LinearLayout.LayoutParams(-1, -2));
+        TextView help = familyText(R.string.family_storage_recovery_help, 15, 0xFFD8DDE5);
+        LinearLayout.LayoutParams helpLp = new LinearLayout.LayoutParams(-1, -2);
+        helpLp.topMargin = dp(8);
+        panel.addView(help, helpLp);
+
+        TextView recover = familyChoice(getString(R.string.family_storage_recovery_confirm), true, () -> {
+            ZonedDateTime now = familyNow();
+            if (!familyStore.recoverStorageAfterAdultAuthentication(now.toInstant().toEpochMilli(),
+                    SystemClock.elapsedRealtime(), now.toLocalDate())) {
+                Toast.makeText(this, R.string.family_storage_error, Toast.LENGTH_LONG).show();
+                return;
+            }
+            stopService(new Intent(this, FamilySessionMonitorService.class));
+            activeFamilyProfile = null;
+            dialog.dismiss();
+            Toast.makeText(this, R.string.family_storage_recovered, Toast.LENGTH_LONG).show();
+            updateFamilyStatus();
+        });
+        panel.addView(recover, familyChoiceLp());
+        TextView cancel = familyChoice(getString(R.string.cancel), true, dialog::dismiss);
+        panel.addView(cancel, familyChoiceLp());
+        dialog.setContentView(panel);
+        configureFamilyDialog(dialog, 0.68f);
+        dialog.show();
+        sizeFamilyDialog(dialog, 0.72f);
+        recover.requestFocus();
+    }
+
+    private void showFamilyManagementPanel() {
+        LocalDate today = familyToday();
+        ZonedDateTime now = familyNow();
+        familyStore.observeClock(now.toInstant().toEpochMilli(), SystemClock.elapsedRealtime(), today);
+        FamilyProfileStore.Snapshot snapshot = familyStore.snapshot(today);
+        if (familyStore.hasStorageError()) {
+            Toast.makeText(this, R.string.family_storage_error, Toast.LENGTH_LONG).show();
+            return;
+        }
+        Dialog dialog = new Dialog(this);
+        dialog.requestWindowFeature(Window.FEATURE_NO_TITLE);
+        LinearLayout panel = familyPanel();
+        panel.addView(familyText(R.string.family_management, 23, Color.WHITE),
+                new LinearLayout.LayoutParams(-1, -2));
+        TextView help = familyText(R.string.family_management_help, 14, 0xFFD8DDE5);
+        LinearLayout.LayoutParams helpLp = new LinearLayout.LayoutParams(-1, -2);
+        helpLp.topMargin = dp(4);
+        panel.addView(help, helpLp);
+
+        LinearLayout content = new LinearLayout(this);
+        content.setOrientation(LinearLayout.VERTICAL);
+        ScrollView scroll = new ScrollView(this);
+        scroll.setFillViewport(false);
+        scroll.addView(content, new ScrollView.LayoutParams(-1, -2));
+        LinearLayout.LayoutParams scrollLp = new LinearLayout.LayoutParams(-1, 0, 1f);
+        scrollLp.topMargin = dp(10);
+        scrollLp.bottomMargin = dp(8);
+        panel.addView(scroll, scrollLp);
+        content.addView(familyText(R.string.family_time_hours, 14, 0xFFB8C3D1), familyChoiceLp());
+        TextView childUsage = familyText(getString(R.string.family_time_label,
+                durationText(snapshot.childUsedMs), durationText(snapshot.remainingMs(FamilyProfileStore.Profile.CHILD_TV, today))),
+                16, Color.WHITE);
+        content.addView(childUsage, familyChoiceLp());
+        TextView xboxUsage = familyText(getString(R.string.family_time_label,
+                durationText(snapshot.xboxUsedMs), durationText(snapshot.remainingMs(FamilyProfileStore.Profile.XBOX, today))),
+                16, Color.WHITE);
+        content.addView(xboxUsage, familyChoiceLp());
+        boolean usageAccess = FamilyUsageAccess.isGranted(this);
+        content.addView(familyText(usageAccess ? R.string.family_usage_access_granted
+                : R.string.family_usage_access_missing, 14,
+                usageAccess ? 0xFFB8C3D1 : 0xFFFFD180), familyChoiceLp());
+        addFamilyManagementAction(content, R.string.family_usage_access_open, this::openFamilyUsageAccessSettings);
+        String inputName = getString(R.string.family_xbox_input_required);
+        TvInputInfo configured = tvInputInfo(snapshot.xboxInputId);
+        if (configured != null) {
+            CharSequence label = configured.loadLabel(this);
+            inputName = label == null ? snapshot.xboxInputId : label.toString();
+        }
+        TextView input = new TextView(this);
+        input.setText(getString(R.string.family_xbox_input_status, getString(R.string.family_xbox_input), inputName));
+        input.setTextColor(0xFFD8DDE5);
+        input.setTextSize(14);
+        content.addView(input, familyChoiceLp());
+        TextView limitations = familyText(R.string.family_limitations, 13, 0xFFFFD180);
+        LinearLayout.LayoutParams limitLp = familyChoiceLp();
+        limitLp.topMargin = dp(10);
+        content.addView(limitations, limitLp);
+        if (snapshot.clockUncertain) {
+            TextView warning = familyText(R.string.family_clock_uncertain, 14, 0xFFFFD180);
+            content.addView(warning, familyChoiceLp());
+        }
+
+        addFamilyManagementAction(content, snapshot.enabled ? R.string.family_disable : R.string.family_enable,
+                () -> {
+                    if (!snapshot.enabled && !launcherState.isPinConfigured()) {
+                        Toast.makeText(this, R.string.family_pin_required, Toast.LENGTH_LONG).show();
+                        return;
+                    }
+                    if (!snapshot.enabled && !FamilyUsageAccess.isGranted(this)) {
+                        dialog.dismiss();
+                        Toast.makeText(this, R.string.family_monitor_required, Toast.LENGTH_LONG).show();
+                        openFamilyUsageAccessSettings();
+                        return;
+                    }
+                    if (!snapshot.enabled) {
+                        ZonedDateTime verifiedNow = familyNow();
+                        if (!familyStore.confirmClock(verifiedNow.toInstant().toEpochMilli(),
+                                SystemClock.elapsedRealtime(), verifiedNow.toLocalDate())) {
+                            Toast.makeText(this, R.string.family_storage_error, Toast.LENGTH_LONG).show();
+                            return;
+                        }
+                    }
+                    if (!familyStore.setEnabled(!snapshot.enabled)) {
+                        Toast.makeText(this, R.string.family_storage_error, Toast.LENGTH_LONG).show();
+                        return;
+                    }
+                    if (snapshot.enabled) {
+                        finishFamilyUsageSession();
+                        stopService(new Intent(this, FamilySessionMonitorService.class));
+                        activeFamilyProfile = null;
+                    }
+                    dialog.dismiss();
+                    updateFamilyStatus();
+                    showFamilyManagementPanel();
+                });
+        if (snapshot.enabled) {
+            addFamilyManagementAction(content, R.string.family_xbox_input, () -> {
+                dialog.dismiss();
+                showFamilyInputChooser();
+            });
+            addFamilyManagementAction(content, R.string.family_add_time_child, () ->
+                    addFamilyTime(dialog, FamilyProfileStore.Profile.CHILD_TV, today));
+            addFamilyManagementAction(content, R.string.family_add_time_xbox, () ->
+                    addFamilyTime(dialog, FamilyProfileStore.Profile.XBOX, today));
+        }
+        if (snapshot.clockUncertain) addFamilyManagementAction(content, R.string.family_clock_confirm, () -> {
+            ZonedDateTime confirmedNow = familyNow();
+            if (familyStore.confirmClock(confirmedNow.toInstant().toEpochMilli(), SystemClock.elapsedRealtime(), confirmedNow.toLocalDate())) {
+                dialog.dismiss();
+                activeFamilyProfile = null;
+                updateFamilyStatus();
+                showFamilyManagementPanel();
+            } else Toast.makeText(this, R.string.family_storage_error, Toast.LENGTH_LONG).show();
+        });
+        addFamilyManagementAction(content, R.string.close, () -> {
+            dialog.dismiss();
+            maybeShowFamilyProfileSelector();
+        });
+
+        dialog.setContentView(panel);
+        configureFamilyDialog(dialog, 0.68f);
+        dialog.show();
+        sizeFamilyDialog(dialog, 0.72f);
+        for (int i = 0; i < content.getChildCount(); i++) {
+            View child = content.getChildAt(i);
+            if (child.isFocusable()) {
+                child.requestFocus();
+                break;
+            }
+        }
+    }
+
+    private void addFamilyManagementAction(LinearLayout content, int label, Runnable action) {
+        TextView button = familyChoice(getString(label), true, action);
+        content.addView(button, familyChoiceLp());
+    }
+
+    private void addFamilyTime(Dialog dialog, FamilyProfileStore.Profile profile, LocalDate day) {
+        if (!familyStore.addExtension(profile, day, 15)) {
+            Toast.makeText(this, R.string.family_storage_error, Toast.LENGTH_LONG).show();
+            return;
+        }
+        Toast.makeText(this, R.string.family_time_added, Toast.LENGTH_SHORT).show();
+        dialog.dismiss();
+        showFamilyManagementPanel();
+    }
+
+    private void showFamilyInputChooser() {
+        TvInputManager manager = (TvInputManager) getSystemService(TV_INPUT_SERVICE);
+        List<TvInputInfo> hdmi = new ArrayList<>();
+        if (manager != null) {
+            for (TvInputInfo info : manager.getTvInputList()) {
+                if (info.isPassthroughInput() && info.getType() == TvInputInfo.TYPE_HDMI) hdmi.add(info);
+            }
+        }
+        if (hdmi.isEmpty()) {
+            Toast.makeText(this, R.string.family_xbox_input_none, Toast.LENGTH_LONG).show();
+            showFamilyManagementPanel();
+            return;
+        }
+        Collections.sort(hdmi, (a, b) -> String.valueOf(a.loadLabel(this)).compareToIgnoreCase(String.valueOf(b.loadLabel(this))));
+        Dialog dialog = new Dialog(this);
+        dialog.requestWindowFeature(Window.FEATURE_NO_TITLE);
+        LinearLayout panel = familyPanel();
+        panel.addView(familyText(R.string.family_xbox_input, 22, Color.WHITE));
+        ScrollView scroll = new ScrollView(this);
+        LinearLayout rows = new LinearLayout(this);
+        rows.setOrientation(LinearLayout.VERTICAL);
+        scroll.addView(rows, new ScrollView.LayoutParams(-1, -2));
+        panel.addView(scroll, new LinearLayout.LayoutParams(-1, 0, 1f));
+        for (TvInputInfo info : hdmi) {
+            String label = String.valueOf(info.loadLabel(this));
+            TextView choice = familyChoice(label, true, () -> {
+                if (!familyStore.setXboxInputId(info.getId())) {
+                    Toast.makeText(this, R.string.family_storage_error, Toast.LENGTH_LONG).show();
+                    return;
+                }
+                Toast.makeText(this, R.string.family_xbox_input_saved, Toast.LENGTH_SHORT).show();
+                dialog.dismiss();
+                showFamilyManagementPanel();
+            });
+            rows.addView(choice, familyChoiceLp());
+        }
+        TextView cancel = familyChoice(getString(R.string.cancel), true, () -> {
+            dialog.dismiss();
+            showFamilyManagementPanel();
+        });
+        panel.addView(cancel, familyChoiceLp());
+        dialog.setContentView(panel);
+        configureFamilyDialog(dialog, 0.68f);
+        dialog.show();
+        sizeFamilyDialog(dialog, 0.62f);
+        if (rows.getChildCount() > 0) rows.getChildAt(0).requestFocus();
+    }
+
     private boolean performOpen(Intent i, boolean showError) {
+        if (!familyAllowsIntent(i)) return false;
+        boolean familySession = familyEnabled();
+        boolean tracking = familySession && beginFamilyUsageSession(i);
+        if (familySession && !tracking) return false;
         i.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
         try {
             startActivity(i);
+            familyLaunchInFlight = familyEnabled();
             return true;
-        } catch (ActivityNotFoundException e) {
+        } catch (ActivityNotFoundException | SecurityException e) {
+            if (tracking) abortFamilyUsageSession();
             if (showError) Toast.makeText(this, R.string.not_available, Toast.LENGTH_SHORT).show();
             return false;
         }
@@ -1601,6 +2493,7 @@ public class MainActivity extends Activity implements AppAdapter.TileListener {
      *  which the Live TV app handles; where nothing takes that, the configured `input_action` is sent
      *  with the same URI instead (XGIMI's HDMI player only answers com.xgimi.action.hdmiPlayer). */
     private void openInput(String inputId) {
+        if (familyEnabled() && !familyAllowsTarget(FamilyAccessPolicy.Target.PASSTHROUGH_INPUT, inputId)) return;
         Uri uri = TvContract.buildChannelUriForPassthroughInput(inputId);
         Intent view = new Intent(Intent.ACTION_VIEW).setDataAndType(uri, "vnd.android.cursor.item/channel")
                 .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
@@ -1617,6 +2510,20 @@ public class MainActivity extends Activity implements AppAdapter.TileListener {
 
     /** Dropdown menu under the Inputs pill: HDMI ports (with connection state), AV and Live TV. */
     private void showInputs() {
+        boolean profilesEnabled = familyEnabled();
+        if (profilesEnabled && activeFamilyProfile == null) {
+            showFamilyProfileSelector();
+            return;
+        }
+        String xboxInputId = "";
+        if (profilesEnabled) {
+            FamilyProfileStore.Snapshot snapshot = familyStore.snapshot(familyToday());
+            if (familyStore.hasStorageError()) {
+                Toast.makeText(this, R.string.family_storage_error, Toast.LENGTH_LONG).show();
+                return;
+            }
+            xboxInputId = snapshot.xboxInputId;
+        }
         View anchor = findViewById(R.id.btnInputs);
         View panel = getLayoutInflater().inflate(R.layout.popup_inputs, root, false);
         LinearLayout rows = panel.findViewById(R.id.rows);
@@ -1658,6 +2565,10 @@ public class MainActivity extends Activity implements AppAdapter.TileListener {
                     }
                 }
                 if (!info.isPassthroughInput()) continue;
+                if (profilesEnabled && activeFamilyProfile == FamilyTimePolicy.Profile.CHILD_TV) continue;
+                if (profilesEnabled && activeFamilyProfile == FamilyTimePolicy.Profile.XBOX
+                        && (!info.getId().equals(xboxInputId)
+                        || info.getType() != TvInputInfo.TYPE_HDMI)) continue;
                 CharSequence l = info.loadLabel(this);
                 String label = l == null ? info.getId() : l.toString();
                 boolean hdmi = info.getType() == TvInputInfo.TYPE_HDMI;
@@ -1671,7 +2582,8 @@ public class MainActivity extends Activity implements AppAdapter.TileListener {
             }
         }
         // Nothing to list where there is no TvInputManager: the TV's own source panel switches inputs.
-        if (rows.getChildCount() == 0 && !sourcePanelService.isEmpty()) {
+        if (rows.getChildCount() == 0 && !sourcePanelService.isEmpty()
+                && (!profilesEnabled || activeFamilyProfile == FamilyTimePolicy.Profile.ADULT)) {
             addInputRow(rows, popup, R.drawable.ic_input, getString(R.string.inputs), -1, this::openSourcePanel);
         }
         Intent liveTv = liveTvIntent();
@@ -1680,7 +2592,7 @@ public class MainActivity extends Activity implements AppAdapter.TileListener {
                     .setDataAndType(TvContract.buildChannelUriForPassthroughInput(tunerId), "vnd.android.cursor.item/channel")
                     .setPackage(liveTvPkg);
         }
-        if (liveTv != null) {
+        if (liveTv != null && (!profilesEnabled || activeFamilyProfile != FamilyTimePolicy.Profile.XBOX)) {
             if (rows.getChildCount() > 0) addSeparator(rows);
             final Intent liveTvIntent = liveTv;
             addInputRow(rows, popup, R.drawable.ic_livetv, getString(R.string.live_tv), -1, () -> open(liveTvIntent));
@@ -1764,6 +2676,7 @@ public class MainActivity extends Activity implements AppAdapter.TileListener {
      * the next one follows as soon as this one is answered. Nothing is shown until the owner says Show.
      */
     private void showCardPrompt() {
+        if (familyEnabled() && activeFamilyProfile == null) return;
         if (!moduleCards || !tilesReady || promptsPaused || cardPrompt != null || !hasWindowFocus() || isFinishing()) return;
         if (cards.isEmpty() || !CardFeature.working()) return;
         CardFeature.run(() -> {

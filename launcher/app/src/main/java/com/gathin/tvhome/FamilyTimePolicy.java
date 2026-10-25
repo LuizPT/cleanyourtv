@@ -8,7 +8,7 @@ import java.util.Objects;
 /** Pure, offline schedule/quota decisions; this class does not measure usage or control HDMI. */
 final class FamilyTimePolicy {
     enum Profile { ADULT, CHILD_TV, XBOX }
-    enum Reason { ALLOWED, OUTSIDE_HOURS, DAILY_LIMIT_REACHED }
+    enum Reason { ALLOWED, OUTSIDE_HOURS, DAILY_LIMIT_REACHED, CLOCK_UNCERTAIN }
 
     static final long MINUTE_MS = 60_000L;
     static final LocalTime START = LocalTime.of(7, 0);
@@ -37,12 +37,20 @@ final class FamilyTimePolicy {
     }
 
     static Decision evaluate(Profile profile, ZonedDateTime when, long consumedMs) {
+        return evaluate(profile, when, consumedMs, 0L, false);
+    }
+
+    static Decision evaluate(Profile profile, ZonedDateTime when, long consumedMs,
+                             long extensionMs, boolean clockUncertain) {
         Objects.requireNonNull(profile, "profile");
         Objects.requireNonNull(when, "when");
         if (profile == Profile.ADULT) {
             return new Decision(true, Reason.ALLOWED, Long.MAX_VALUE);
         }
+        if (clockUncertain) return new Decision(false, Reason.CLOCK_UNCERTAIN, 0L);
         long budget = dailyBudgetMs(profile, when.getDayOfWeek());
+        long extra = Math.max(0L, extensionMs);
+        budget = budget > Long.MAX_VALUE - extra ? Long.MAX_VALUE : budget + extra;
         long remaining = consumedMs < 0L ? budget : Math.max(0L, budget - Math.min(budget, consumedMs));
         if (!isWithinChildHours(when.toLocalTime())) {
             return new Decision(false, Reason.OUTSIDE_HOURS, remaining);
