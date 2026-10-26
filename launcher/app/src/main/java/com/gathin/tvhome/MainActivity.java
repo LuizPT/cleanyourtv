@@ -2362,20 +2362,28 @@ public class MainActivity extends Activity implements AppAdapter.TileListener {
             return;
         }
         FamilyProfileStore.Snapshot snapshot = familyStore.snapshot(today);
+        int screenHeightDp = Math.round(getResources().getDisplayMetrics().heightPixels / density);
+        int screenWidthDp = Math.round(getResources().getDisplayMetrics().widthPixels / density);
+        boolean compactProfileLayout = screenWidthDp < 600 || screenHeightDp < 500;
 
         Dialog dialog = new Dialog(this);
         dialog.requestWindowFeature(Window.FEATURE_NO_TITLE);
         LinearLayout panel = familyPanel();
-        panel.setGravity(Gravity.CENTER_HORIZONTAL);
-        panel.setPadding(dp(20), dp(12), dp(20), dp(10));
-        TextView title = familyText(R.string.family_select_profile, 27, Color.WHITE);
+        panel.setGravity(Gravity.CENTER);
+        int horizontalPadding = compactProfileLayout ? 16 : 28;
+        panel.setPadding(dp(horizontalPadding), dp(compactProfileLayout ? 12 : 22),
+                dp(horizontalPadding), dp(compactProfileLayout ? 12 : 18));
+        panel.setBackgroundResource(R.drawable.family_profile_selector_bg);
+        TextView title = familyText(R.string.family_select_profile, compactProfileLayout ? 27 : 32, Color.WHITE);
         title.setGravity(Gravity.CENTER);
         panel.addView(title, new LinearLayout.LayoutParams(-1, -2));
-        TextView help = familyText(R.string.family_select_profile_help, 14, 0xFFC5CBD4);
-        help.setGravity(Gravity.CENTER);
-        LinearLayout.LayoutParams helpLp = new LinearLayout.LayoutParams(-1, -2);
-        helpLp.topMargin = dp(3);
-        panel.addView(help, helpLp);
+        if (!compactProfileLayout) {
+            TextView help = familyText(R.string.family_select_profile_help, 14, 0xFFC5CBD4);
+            help.setGravity(Gravity.CENTER);
+            LinearLayout.LayoutParams helpLp = new LinearLayout.LayoutParams(-1, -2);
+            helpLp.topMargin = dp(6);
+            panel.addView(help, helpLp);
+        }
 
         if (snapshot.clockUncertain) {
             TextView warning = familyText(R.string.family_clock_uncertain, 13, 0xFFFFD180);
@@ -2399,13 +2407,11 @@ public class MainActivity extends Activity implements AppAdapter.TileListener {
         }
 
         boolean adultPin = launcherState.hasParentalCredential() && !launcherState.hasStorageError();
-        int warningHeightDp = (snapshot.clockUncertain ? 34 : 0)
-                + ((!FamilyUsageAccess.isGranted(this) || snapshot.sessionPending) ? 34 : 0)
-                + (adultPin ? 0 : 26);
-        int screenHeightDp = Math.round(getResources().getDisplayMetrics().heightPixels / density);
-        int profileTileHeightDp = Math.max(120, Math.min(214, screenHeightDp - 167 - warningHeightDp));
-        int screenWidthDp = Math.round(getResources().getDisplayMetrics().widthPixels / density);
-        int profileRowWidthDp = Math.min(Math.round(screenWidthDp * 0.72f), profileTileHeightDp * 3 + 36);
+        int minimumCardSizeDp = compactProfileLayout ? 84 : 112;
+        float heightScale = compactProfileLayout ? 0.24f : 0.34f;
+        int profileCardSizeDp = Math.max(minimumCardSizeDp, Math.min(246,
+                Math.min(Math.round(screenHeightDp * heightScale), Math.round(screenWidthDp * 0.205f))));
+        int profileRowWidthDp = Math.min(Math.round(screenWidthDp * 0.92f), profileCardSizeDp * 3 + 54);
 
         LinearLayout choices = new LinearLayout(this);
         choices.setOrientation(LinearLayout.HORIZONTAL);
@@ -2413,12 +2419,12 @@ public class MainActivity extends Activity implements AppAdapter.TileListener {
         LinearLayout.LayoutParams choicesLp = new LinearLayout.LayoutParams(
                 dp(profileRowWidthDp), -2);
         choicesLp.gravity = Gravity.CENTER;
-        choicesLp.topMargin = dp(12);
+        choicesLp.topMargin = dp(compactProfileLayout ? 14 : 26);
         panel.addView(choices, choicesLp);
 
         View adult = familyProfileTile(R.id.familyProfileAdult, R.string.family_profile_adult,
-                R.drawable.ic_family_adult, 0xFF35577D,
-                getString(R.string.family_profile_adult_sequence_hint), adultPin, () -> {
+                R.drawable.family_profile_adult, getString(R.string.family_profile_adult_sequence_hint),
+                adultPin, profileCardSizeDp, () -> {
             dialog.dismiss();
             familySelectorShowing = false;
             if (!adultPin) {
@@ -2428,18 +2434,18 @@ public class MainActivity extends Activity implements AppAdapter.TileListener {
             authenticate(getString(R.string.family_sequence_adult_auth),
                     () -> selectFamilyProfile(FamilyTimePolicy.Profile.ADULT));
         });
-        addFamilyProfileTile(choices, adult, profileTileHeightDp);
+        addFamilyProfileTile(choices, adult);
 
         FamilyAccessPolicy.Decision child = profileChoiceDecision(FamilyTimePolicy.Profile.CHILD_TV, snapshot, today);
         long childRemaining = snapshot.remainingMs(FamilyProfileStore.Profile.CHILD_TV, today);
         String childStatus = familyProfileStatus(child, childRemaining, FamilyTimePolicy.Profile.CHILD_TV);
         View childButton = familyProfileTile(R.id.familyProfileChild, R.string.family_profile_child_short,
-                R.drawable.ic_family_child, 0xFF8057A5, childStatus, child.allowed, () -> {
+                R.drawable.family_profile_child, childStatus, child.allowed, profileCardSizeDp, () -> {
                     dialog.dismiss();
                     familySelectorShowing = false;
                     selectFamilyProfile(FamilyTimePolicy.Profile.CHILD_TV);
                 });
-        addFamilyProfileTile(choices, childButton, profileTileHeightDp);
+        addFamilyProfileTile(choices, childButton);
 
         boolean hasXboxInput = isConfiguredXboxInput(snapshot.xboxInputId);
         FamilyAccessPolicy.Decision xbox = profileChoiceDecision(FamilyTimePolicy.Profile.XBOX, snapshot, today);
@@ -2447,12 +2453,12 @@ public class MainActivity extends Activity implements AppAdapter.TileListener {
         String xboxStatus = hasXboxInput ? familyProfileStatus(xbox, xboxRemaining, FamilyTimePolicy.Profile.XBOX)
                 : getString(R.string.family_profile_xbox_configure);
         View xboxButton = familyProfileTile(R.id.familyProfileXbox, R.string.family_profile_xbox_short,
-                R.drawable.ic_family_xbox, 0xFF167A47, xboxStatus, hasXboxInput && xbox.allowed, () -> {
+                R.drawable.family_profile_xbox, xboxStatus, hasXboxInput && xbox.allowed, profileCardSizeDp, () -> {
                     dialog.dismiss();
                     familySelectorShowing = false;
                     selectFamilyProfile(FamilyTimePolicy.Profile.XBOX);
                 });
-        addFamilyProfileTile(choices, xboxButton, profileTileHeightDp);
+        addFamilyProfileTile(choices, xboxButton);
 
         if (!adultPin) {
             TextView pinHint = familyText(R.string.family_sequence_required, 13, 0xFFFFD180);
@@ -2465,7 +2471,7 @@ public class MainActivity extends Activity implements AppAdapter.TileListener {
         actions.setOrientation(LinearLayout.HORIZONTAL);
         actions.setGravity(Gravity.CENTER);
         LinearLayout.LayoutParams actionsLp = new LinearLayout.LayoutParams(-1, -2);
-        actionsLp.topMargin = dp(8);
+        actionsLp.topMargin = dp(compactProfileLayout ? 18 : 34);
         panel.addView(actions, actionsLp);
         TextView manage = familyChoice(getString(R.string.family_manage_profiles), true, () -> {
             dialog.dismiss();
@@ -2477,13 +2483,6 @@ public class MainActivity extends Activity implements AppAdapter.TileListener {
         manage.setPadding(dp(20), dp(8), dp(20), dp(8));
         manage.setBackgroundResource(R.drawable.focus_button_bg);
         actions.addView(manage, familyActionLp());
-        TextView cancel = familyChoice(getString(R.string.close), true, () -> {
-            dialog.dismiss();
-            familySelectorShowing = false;
-        });
-        cancel.setId(View.generateViewId());
-        cancel.setGravity(Gravity.CENTER);
-        actions.addView(cancel, familyActionLp());
 
         boolean childEnabled = child.allowed;
         boolean xboxEnabled = hasXboxInput && xbox.allowed;
@@ -2498,22 +2497,17 @@ public class MainActivity extends Activity implements AppAdapter.TileListener {
             childButton.setNextFocusRightId(adultPin ? adult.getId() : manage.getId());
             childButton.setNextFocusLeftId(nextFromChild);
             xboxButton.setNextFocusRightId(previousFromXbox);
-            manage.setNextFocusLeftId(cancel.getId());
-            cancel.setNextFocusRightId(manage.getId());
         } else {
             adult.setNextFocusRightId(nextFromAdult);
             childButton.setNextFocusLeftId(adultPin ? adult.getId() : manage.getId());
             childButton.setNextFocusRightId(nextFromChild);
             xboxButton.setNextFocusLeftId(previousFromXbox);
-            manage.setNextFocusRightId(cancel.getId());
-            cancel.setNextFocusLeftId(manage.getId());
         }
         adult.setNextFocusDownId(manage.getId());
         childButton.setNextFocusDownId(manage.getId());
         xboxButton.setNextFocusDownId(manage.getId());
         manage.setNextFocusUpId(adultPin ? adult.getId()
                 : childEnabled ? childButton.getId() : xboxEnabled ? xboxButton.getId() : View.NO_ID);
-        cancel.setNextFocusUpId(manage.getId());
         View.OnKeyListener downToManage = (view, keyCode, event) -> {
             if (keyCode == KeyEvent.KEYCODE_DPAD_DOWN) {
                 if (event.getAction() == KeyEvent.ACTION_DOWN) manage.requestFocus();
@@ -2526,19 +2520,9 @@ public class MainActivity extends Activity implements AppAdapter.TileListener {
         xboxButton.setOnKeyListener(downToManage);
         manage.setOnKeyListener((view, keyCode, event) -> {
             if (event.getAction() != KeyEvent.ACTION_DOWN) return false;
-            if (keyCode == (rtl ? KeyEvent.KEYCODE_DPAD_LEFT : KeyEvent.KEYCODE_DPAD_RIGHT)) {
-                return cancel.requestFocus();
-            }
             if (keyCode == KeyEvent.KEYCODE_DPAD_UP) {
                 View firstAvailable = adultPin ? adult : childEnabled ? childButton : xboxEnabled ? xboxButton : null;
                 return firstAvailable != null && firstAvailable.requestFocus();
-            }
-            return false;
-        });
-        cancel.setOnKeyListener((view, keyCode, event) -> {
-            if (keyCode == (rtl ? KeyEvent.KEYCODE_DPAD_RIGHT : KeyEvent.KEYCODE_DPAD_LEFT)
-                    && event.getAction() == KeyEvent.ACTION_DOWN) {
-                return manage.requestFocus();
             }
             return false;
         });
@@ -2552,28 +2536,30 @@ public class MainActivity extends Activity implements AppAdapter.TileListener {
             return false;
         });
         dialog.setContentView(panel);
-        configureFamilyDialog(dialog, 0.72f);
+        configureFamilyDialog(dialog, 0f);
         dialog.setOnCancelListener(d -> familySelectorShowing = false);
         dialog.show();
-        sizeFamilyDialog(dialog, 0.88f);
+        Window window = dialog.getWindow();
+        if (window != null) window.setLayout(ViewGroup.LayoutParams.MATCH_PARENT,
+                ViewGroup.LayoutParams.MATCH_PARENT);
         (adultPin ? adult : child.allowed ? childButton : hasXboxInput && xbox.allowed ? xboxButton : manage).requestFocus();
     }
 
-    private void addFamilyProfileTile(LinearLayout row, View tile, int heightDp) {
-        LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(0, dp(heightDp), 1f);
+    private void addFamilyProfileTile(LinearLayout row, View tile) {
+        LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f);
         lp.setMarginStart(dp(6));
         lp.setMarginEnd(dp(6));
         row.addView(tile, lp);
     }
 
-    private View familyProfileTile(int id, int nameResource, int iconResource, int color,
-            String status, boolean enabled, Runnable action) {
+    private View familyProfileTile(int id, int nameResource, int artworkResource,
+            String status, boolean enabled, int artworkSizeDp, Runnable action) {
         LinearLayout tile = new LinearLayout(this);
         tile.setId(id);
         tile.setOrientation(LinearLayout.VERTICAL);
         tile.setGravity(Gravity.CENTER);
-        tile.setPadding(dp(9), dp(10), dp(9), dp(9));
-        tile.setBackgroundResource(R.drawable.family_profile_tile_bg);
+        tile.setPadding(dp(3), dp(3), dp(3), dp(3));
+        tile.setBackgroundColor(Color.TRANSPARENT);
         tile.setFocusable(enabled);
         tile.setFocusableInTouchMode(enabled);
         tile.setClickable(enabled);
@@ -2583,18 +2569,38 @@ public class MainActivity extends Activity implements AppAdapter.TileListener {
         tile.setContentDescription(getString(R.string.family_profile_accessibility, name, status));
         if (enabled) tile.setOnClickListener(v -> action.run());
 
-        ImageView icon = new ImageView(this);
-        icon.setImageResource(iconResource);
-        icon.setImageTintList(android.content.res.ColorStateList.valueOf(Color.WHITE));
-        icon.setContentDescription(null);
-        android.graphics.drawable.GradientDrawable avatar = new android.graphics.drawable.GradientDrawable();
-        avatar.setShape(android.graphics.drawable.GradientDrawable.OVAL);
-        avatar.setColor(color);
-        icon.setBackground(avatar);
-        icon.setPadding(dp(17), dp(17), dp(17), dp(17));
-        LinearLayout.LayoutParams iconLp = new LinearLayout.LayoutParams(dp(68), dp(68));
-        iconLp.bottomMargin = dp(9);
-        tile.addView(icon, iconLp);
+        FrameLayout artworkFrame = new FrameLayout(this);
+        artworkFrame.setBackgroundResource(R.drawable.family_profile_art_frame);
+        artworkFrame.setPadding(dp(3), dp(3), dp(3), dp(3));
+        artworkFrame.setClipToOutline(true);
+        artworkFrame.setElevation(dp(2));
+        LinearLayout.LayoutParams artworkFrameLp = new LinearLayout.LayoutParams(
+                dp(artworkSizeDp), dp(artworkSizeDp));
+        artworkFrameLp.bottomMargin = dp(8);
+        tile.addView(artworkFrame, artworkFrameLp);
+
+        ImageView artwork = new ImageView(this);
+        artwork.setImageResource(artworkResource);
+        artwork.setScaleType(ImageView.ScaleType.CENTER_CROP);
+        artwork.setContentDescription(null);
+        artwork.setBackgroundResource(R.drawable.family_profile_art_clip);
+        artwork.setClipToOutline(true);
+        artwork.setImportantForAccessibility(View.IMPORTANT_FOR_ACCESSIBILITY_NO);
+        artworkFrame.addView(artwork, new FrameLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
+
+        tile.setOnFocusChangeListener((view, focused) -> {
+            artworkFrame.setBackgroundResource(focused
+                    ? R.drawable.family_profile_art_frame_focused : R.drawable.family_profile_art_frame);
+            float scale = focused ? 1.035f : 1f;
+            artworkFrame.animate().scaleX(scale).scaleY(scale).setDuration(150L).start();
+            artworkFrame.setElevation(dp(focused ? 18 : 2));
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
+                int glow = focused ? 0xFF4F9FFF : Color.BLACK;
+                artworkFrame.setOutlineAmbientShadowColor(glow);
+                artworkFrame.setOutlineSpotShadowColor(glow);
+            }
+        });
 
         TextView label = familyText(name, 20, Color.WHITE);
         label.setGravity(Gravity.CENTER);
@@ -2606,7 +2612,7 @@ public class MainActivity extends Activity implements AppAdapter.TileListener {
         detail.setMaxLines(2);
         detail.setEllipsize(android.text.TextUtils.TruncateAt.END);
         LinearLayout.LayoutParams detailLp = new LinearLayout.LayoutParams(-1, -2);
-        detailLp.topMargin = dp(5);
+        detailLp.topMargin = dp(4);
         tile.addView(detail, detailLp);
         return tile;
     }

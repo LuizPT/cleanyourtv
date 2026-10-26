@@ -11,6 +11,8 @@ import android.app.UiAutomation;
 import android.content.Context;
 import android.content.ComponentName;
 import android.content.Intent;
+import android.graphics.Bitmap;
+import android.graphics.BitmapFactory;
 import android.graphics.Rect;
 import android.os.Build;
 import android.os.SystemClock;
@@ -91,7 +93,8 @@ public final class FamilyProfileUiTest {
         assertProfileCard(R.id.familyProfileAdult);
         assertProfileCard(R.id.familyProfileChild);
         assertProfileCard(R.id.familyProfileXbox);
-        assertProfileCardsAreSquareAndHorizontal();
+        assertProfileCardsAreHorizontal();
+        assertProfileArtworkResourcesAreSquare();
         AccessibilityNodeInfo manageNode = awaitViewById(R.id.familyManageProfiles);
         assertNotNull("Profile management action is missing", manageNode);
         assertTrue("Profile management action must be focusable", manageNode.isFocusable());
@@ -668,7 +671,7 @@ public final class FamilyProfileUiTest {
         }
     }
 
-    private void assertProfileCardsAreSquareAndHorizontal() throws Exception {
+    private void assertProfileCardsAreHorizontal() throws Exception {
         AccessibilityNodeInfo adult = awaitViewById(R.id.familyProfileAdult);
         AccessibilityNodeInfo child = awaitViewById(R.id.familyProfileChild);
         AccessibilityNodeInfo xbox = awaitViewById(R.id.familyProfileXbox);
@@ -684,13 +687,29 @@ public final class FamilyProfileUiTest {
             xbox.getBoundsInScreen(xboxBounds);
             assertTrue("Profile cards should be laid out left to right",
                     adultBounds.left < childBounds.left && childBounds.left < xboxBounds.left);
-            float ratio = (float) adultBounds.width() / Math.max(1, adultBounds.height());
-            assertTrue("Profile cards should remain close to square: " + ratio,
-                    ratio >= 0.85f && ratio <= 1.25f);
         } finally {
             adult.recycle();
             child.recycle();
             xbox.recycle();
+        }
+    }
+
+    private void assertProfileArtworkResourcesAreSquare() {
+        Context target = InstrumentationRegistry.getInstrumentation().getTargetContext();
+        int[] artworkResources = {
+                R.drawable.family_profile_adult,
+                R.drawable.family_profile_child,
+                R.drawable.family_profile_xbox
+        };
+        for (int resource : artworkResources) {
+            Bitmap artwork = BitmapFactory.decodeResource(target.getResources(), resource);
+            assertNotNull("Profile artwork must be packaged locally", artwork);
+            try {
+                assertEquals("Profile artwork should be square", artwork.getWidth(), artwork.getHeight());
+                assertTrue("Profile artwork should have usable TV resolution", artwork.getWidth() >= 200);
+            } finally {
+                artwork.recycle();
+            }
         }
     }
 
