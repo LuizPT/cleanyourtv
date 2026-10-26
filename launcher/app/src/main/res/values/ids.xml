@@ -5,6 +5,12 @@
     <item name="familyProfileChild" type="id" />
     <item name="familyProfileXbox" type="id" />
     <item name="familyManageProfiles" type="id" />
+    <item name="familyManagementCardChild" type="id" />
+    <item name="familyManagementCardXbox" type="id" />
+    <item name="familyManagementCardSecurity" type="id" />
+    <item name="familyManagementCardApps" type="id" />
+    <item name="familyManagementCardMonitor" type="id" />
+    <item name="familyManagementDetailBack" type="id" />
     <item name="unlock_sequence_progress" type="id" />
     <item name="unlock_sequence_count" type="id" />
 </resources>

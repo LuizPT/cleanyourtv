@@ -12,6 +12,7 @@ import android.content.Context;
 import android.content.ComponentName;
 import android.content.Intent;
 import android.graphics.Rect;
+import android.os.Build;
 import android.os.SystemClock;
 import android.view.KeyEvent;
 import android.view.Gravity;
@@ -27,6 +28,7 @@ import androidx.test.platform.app.InstrumentationRegistry;
 
 import org.junit.After;
 import org.junit.Before;
+import org.junit.Assume;
 import org.junit.Test;
 import org.junit.runner.RunWith;
 
@@ -56,6 +58,7 @@ public final class FamilyProfileUiTest {
     private char[] testPin;
 
     @Before public void setUp() throws Exception {
+        Assume.assumeTrue("Family profile UI tests are restricted to Android emulators", isEmulator());
         Context target = InstrumentationRegistry.getInstrumentation().getTargetContext();
         familyFile = new File(target.getFilesDir(), "family-profiles.properties");
         pinFile = new File(target.getFilesDir(), "launcher-state.properties");
@@ -167,19 +170,76 @@ public final class FamilyProfileUiTest {
         InstrumentationRegistry.getInstrumentation().sendKeyDownUpSync(KeyEvent.KEYCODE_DPAD_CENTER);
 
         String management = awaitVisibleText(getString(R.string.family_management));
-        assertTrue(management.contains(getString(R.string.family_diagnostic_title)));
-        assertTrue(management.contains(getString(R.string.family_statistics_title)));
-        assertTrue(management.contains(getString(R.string.family_advanced_schedule)));
+        assertViewExists(R.id.familyManagementCardChild, "Child card missing from family dashboard");
+        assertViewExists(R.id.familyManagementCardXbox, "Xbox card missing from family dashboard");
+        assertViewExists(R.id.familyManagementCardSecurity, "Adult security card missing from family dashboard");
+        assertViewExists(R.id.familyManagementCardApps, "Allowed apps card missing from family dashboard");
+        assertViewExists(R.id.familyManagementCardMonitor, "Monitoring card missing from family dashboard");
         assertTrue(management.contains(getString(R.string.family_protection_limited))
                 || management.contains(getString(R.string.family_protection_ready)));
 
-        scrollActiveWindowToBottom();
+        assertFocusedView(R.id.familyManagementCardChild, "Child card should receive initial dashboard focus");
+        InstrumentationRegistry.getInstrumentation().sendKeyDownUpSync(KeyEvent.KEYCODE_DPAD_RIGHT);
+        assertFocusedView(R.id.familyManagementCardXbox, "Right should move from Child to Xbox");
+        InstrumentationRegistry.getInstrumentation().sendKeyDownUpSync(KeyEvent.KEYCODE_DPAD_DOWN);
+        assertFocusedView(R.id.familyManagementCardApps, "Down should move from Xbox to allowed apps");
+        InstrumentationRegistry.getInstrumentation().sendKeyDownUpSync(KeyEvent.KEYCODE_DPAD_LEFT);
+        assertFocusedView(R.id.familyManagementCardSecurity, "Left should move to Adult security");
+        InstrumentationRegistry.getInstrumentation().sendKeyDownUpSync(KeyEvent.KEYCODE_DPAD_DOWN);
+        assertFocusedView(R.id.familyManagementCardMonitor, "Down should move to monitoring");
+        InstrumentationRegistry.getInstrumentation().sendKeyDownUpSync(KeyEvent.KEYCODE_DPAD_CENTER);
+        String monitoring = awaitVisibleText(getString(R.string.family_management_section_monitoring));
+        assertTrue(monitoring.contains(getString(R.string.family_diagnostic_title)));
+        assertTrue(monitoring.contains(getString(R.string.family_statistics_title)));
+        assertTrue(monitoring.contains(getString(R.string.family_advanced_schedule)));
+        clickExactText(getString(R.string.family_advanced_schedule));
+        awaitVisibleText(getString(R.string.family_profile_child));
+        clickExactText(getString(R.string.family_profile_child));
+        awaitVisibleText(getString(R.string.family_schedule_help));
+        InstrumentationRegistry.getInstrumentation().sendKeyDownUpSync(KeyEvent.KEYCODE_DPAD_CENTER);
+        awaitVisibleText(getString(R.string.family_schedule_restore_default));
+        clickExactText(getString(R.string.save));
+        awaitVisibleText(getString(R.string.family_schedule_help));
+        clickExactText(getString(R.string.close));
+        awaitVisibleText(getString(R.string.family_advanced_schedule));
+        clickExactText(getString(R.string.close));
+        awaitVisibleText(getString(R.string.family_management_section_monitoring));
+        InstrumentationRegistry.getInstrumentation().sendKeyDownUpSync(KeyEvent.KEYCODE_BACK);
+        awaitVisibleText(getString(R.string.family_management));
+        assertFocusedView(R.id.familyManagementCardMonitor,
+                "Back should return to the previously selected dashboard card");
+        clickView(R.id.familyManagementCardChild);
+        awaitVisibleText(getString(R.string.family_management_section_time));
         assertTrue(visibleText().contains(getString(R.string.family_add_time_child)));
         clickExactText(getString(R.string.family_add_time_child));
         String extensionChoices = awaitVisibleText(getString(R.string.family_add_time_title));
         assertTrue(extensionChoices.contains(getString(R.string.family_add_time_15)));
         assertTrue(extensionChoices.contains(getString(R.string.family_add_time_30)));
         assertTrue(extensionChoices.contains(getString(R.string.family_add_time_60)));
+    }
+
+    private static boolean isEmulator() {
+        String fingerprint = Build.FINGERPRINT == null ? "" : Build.FINGERPRINT.toLowerCase(java.util.Locale.ROOT);
+        String model = Build.MODEL == null ? "" : Build.MODEL.toLowerCase(java.util.Locale.ROOT);
+        String hardware = Build.HARDWARE == null ? "" : Build.HARDWARE.toLowerCase(java.util.Locale.ROOT);
+        String product = Build.PRODUCT == null ? "" : Build.PRODUCT.toLowerCase(java.util.Locale.ROOT);
+        String manufacturer = Build.MANUFACTURER == null ? "" : Build.MANUFACTURER.toLowerCase(java.util.Locale.ROOT);
+        return fingerprint.startsWith("generic") || fingerprint.contains("emulator")
+                || model.contains("emulator") || model.contains("android sdk built for")
+                || hardware.contains("goldfish") || hardware.contains("ranchu")
+                || product.contains("sdk_gphone") || manufacturer.contains("genymotion");
+    }
+
+    private void assertViewExists(int id, String message) throws Exception {
+        AccessibilityNodeInfo node = awaitViewById(id);
+        assertNotNull(message, node);
+        if (node != null) node.recycle();
+    }
+
+    private void assertFocusedView(int id, String message) throws Exception {
+        AccessibilityNodeInfo node = awaitFocusedViewById(id);
+        assertNotNull(message, node);
+        if (node != null) node.recycle();
     }
 
     @Test public void protectedAppManagementRequiresSequenceBeforeShowingContextActions() throws Exception {

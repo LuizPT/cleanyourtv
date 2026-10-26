@@ -104,6 +104,7 @@ public class MainActivity extends Activity implements AppAdapter.TileListener {
     private FamilyProfileStore familyStore;
     private TextView familyStatus;
     private TextView familyOverlayPermissionStatus;
+    private String familyManagementFocusCard = "child";
     private FamilyTimePolicy.Profile activeFamilyProfile;
     private boolean familyActivityResumed;
     private boolean familySelectorShowing;
@@ -2866,6 +2867,10 @@ public class MainActivity extends Activity implements AppAdapter.TileListener {
         recover.requestFocus();
     }
 
+    private interface FamilyManagementDetailContent {
+        void addTo(LinearLayout content, Dialog dialog);
+    }
+
     private void showFamilyManagementPanel() {
         if (!initializeChildAppsIfNeeded()) {
             Toast.makeText(this, R.string.family_storage_error, Toast.LENGTH_LONG).show();
@@ -2879,253 +2884,258 @@ public class MainActivity extends Activity implements AppAdapter.TileListener {
             Toast.makeText(this, R.string.family_storage_error, Toast.LENGTH_LONG).show();
             return;
         }
+
+        long childRemainingMs = snapshot.remainingMs(FamilyProfileStore.Profile.CHILD_TV, today);
+        long xboxRemainingMs = snapshot.remainingMs(FamilyProfileStore.Profile.XBOX, today);
+        String childSummary = getString(R.string.family_management_time_summary,
+                familyDisplayMinutes(snapshot.childUsedMs),
+                familyDisplayMinutes(safeAdd(snapshot.childUsedMs, childRemainingMs)),
+                familyRemainingMinutes(childRemainingMs));
+        String xboxSummary = getString(R.string.family_management_time_summary,
+                familyDisplayMinutes(snapshot.xboxUsedMs),
+                familyDisplayMinutes(safeAdd(snapshot.xboxUsedMs, xboxRemainingMs)),
+                familyRemainingMinutes(xboxRemainingMs));
+        boolean usageAccess = FamilyUsageAccess.isGranted(this);
+        int reliabilityColor = familyReliabilityColor(snapshot, usageAccess);
+
         Dialog dialog = new Dialog(this);
         dialog.requestWindowFeature(Window.FEATURE_NO_TITLE);
         LinearLayout panel = new LinearLayout(this);
         panel.setOrientation(LinearLayout.VERTICAL);
-        panel.setPadding(dp(42), dp(22), dp(42), dp(16));
+        panel.setPadding(dp(38), dp(24), dp(38), dp(18));
         panel.setBackgroundResource(R.drawable.family_management_background);
-        panel.addView(familyText(R.string.family_management_brand, 12, 0xFF91BFFF),
-                new LinearLayout.LayoutParams(-1, -2));
-        TextView title = familyText(R.string.family_management, 30, Color.WHITE);
-        LinearLayout.LayoutParams titleLp = new LinearLayout.LayoutParams(-1, -2);
-        titleLp.topMargin = dp(3);
-        panel.addView(title, titleLp);
-        TextView help = familyText(R.string.family_management_help, 15, 0xFFC5CFDD);
+
+        LinearLayout heading = new LinearLayout(this);
+        heading.setGravity(Gravity.CENTER_VERTICAL);
+        heading.setOrientation(LinearLayout.HORIZONTAL);
+        TextView title = familyText(R.string.family_management, 28, Color.WHITE);
+        heading.addView(title, new LinearLayout.LayoutParams(0, -2, 1f));
+        TextView protection = familyText(familyReliabilityStatus(snapshot, usageAccess), 13, reliabilityColor);
+        protection.setSingleLine(true);
+        protection.setPadding(dp(12), dp(6), dp(12), dp(6));
+        protection.setBackgroundResource(R.drawable.pill_bg);
+        protection.setContentDescription(getString(R.string.family_management_protection_status) + ": "
+                + familyReliabilityStatus(snapshot, usageAccess));
+        heading.addView(protection, new LinearLayout.LayoutParams(-2, -2));
+        panel.addView(heading, new LinearLayout.LayoutParams(-1, -2));
+        TextView help = familyText(R.string.family_management_help, 14, 0xFFC5CFDD);
         LinearLayout.LayoutParams helpLp = new LinearLayout.LayoutParams(-1, -2);
-        helpLp.topMargin = dp(2);
+        helpLp.topMargin = dp(3);
         panel.addView(help, helpLp);
 
-        LinearLayout content = new LinearLayout(this);
-        content.setOrientation(LinearLayout.VERTICAL);
         ScrollView scroll = new ScrollView(this);
         scroll.setFillViewport(false);
         scroll.setClipToPadding(false);
-        scroll.addView(content, new ScrollView.LayoutParams(-1, -2));
+        LinearLayout cards = new LinearLayout(this);
+        cards.setOrientation(LinearLayout.VERTICAL);
+        scroll.addView(cards, new ScrollView.LayoutParams(-1, -2));
         LinearLayout.LayoutParams scrollLp = new LinearLayout.LayoutParams(-1, 0, 1f);
-        scrollLp.topMargin = dp(13);
-        scrollLp.bottomMargin = dp(12);
+        scrollLp.topMargin = dp(15);
+        scrollLp.bottomMargin = dp(10);
         panel.addView(scroll, scrollLp);
-        boolean usageAccess = FamilyUsageAccess.isGranted(this);
-        content.addView(familyText(R.string.family_management_today, 15, 0xFFB9D8FC),
-                familyChoiceLp());
-        LinearLayout summary = new LinearLayout(this);
-        summary.setOrientation(LinearLayout.HORIZONTAL);
-        LinearLayout.LayoutParams summaryLp = new LinearLayout.LayoutParams(-1, -2);
-        summaryLp.topMargin = dp(7);
-        content.addView(summary, summaryLp);
-        long childRemainingMs = snapshot.remainingMs(FamilyProfileStore.Profile.CHILD_TV, today);
-        long xboxRemainingMs = snapshot.remainingMs(FamilyProfileStore.Profile.XBOX, today);
-        TextView childSummary = addFamilyManagementSummaryCard(summary, R.string.family_profile_child_short,
-                getString(R.string.family_management_time_summary, familyDisplayMinutes(snapshot.childUsedMs),
-                        familyDisplayMinutes(safeAdd(snapshot.childUsedMs, childRemainingMs)),
-                        familyRemainingMinutes(childRemainingMs)),
-                Color.WHITE, false);
-        childSummary.setContentDescription(getString(R.string.family_time_label,
-                durationText(snapshot.childUsedMs), durationText(childRemainingMs)));
-        TextView xboxSummary = addFamilyManagementSummaryCard(summary, R.string.family_profile_xbox_short,
-                getString(R.string.family_management_time_summary, familyDisplayMinutes(snapshot.xboxUsedMs),
-                        familyDisplayMinutes(safeAdd(snapshot.xboxUsedMs, xboxRemainingMs)),
-                        familyRemainingMinutes(xboxRemainingMs)),
-                Color.WHITE, false);
-        xboxSummary.setContentDescription(getString(R.string.family_time_label,
-                durationText(snapshot.xboxUsedMs), durationText(xboxRemainingMs)));
-        addFamilyManagementSummaryCard(summary, R.string.family_management_protection_status,
-                familyReliabilityStatus(snapshot, usageAccess),
-                familyReliabilityColor(snapshot, usageAccess), true);
-        TextView hours = familyText(R.string.family_time_hours, 13, 0xFF9EADC0);
-        LinearLayout.LayoutParams hoursLp = new LinearLayout.LayoutParams(-1, -2);
-        hoursLp.topMargin = dp(5);
-        content.addView(hours, hoursLp);
 
-        LinearLayout accessSection = familyManagementSection(content,
-                R.string.family_management_profiles_section);
-        accessSection.addView(familyText(R.string.family_management_sequence_ready, 13, 0xFF9FE2BE),
-                familyManagementNoteLp());
-        TextView usageStatus = familyText(usageAccess ? R.string.family_management_usage_ready
-                : R.string.family_management_usage_missing, 13,
-                usageAccess ? 0xFF9FE2BE : 0xFFFFD180);
-        usageStatus.setContentDescription(getString(usageAccess ? R.string.family_usage_access_granted
-                : R.string.family_usage_access_missing));
-        accessSection.addView(usageStatus, familyManagementNoteLp());
-        accessSection.addView(familyText(getString(R.string.family_management_allowed_apps_count,
-                        familyAllowedChildAppCount()), 13, 0xFFB8C8DB), familyManagementNoteLp());
-        TextView firstAction = addFamilyManagementSectionAction(accessSection,
-                R.string.family_usage_access_open, this::openFamilyUsageAccessSettings);
-        addFamilyManagementSectionAction(accessSection, R.string.sequence_change, this::changeUnlockSequence);
-        addFamilyManagementSectionAction(accessSection, R.string.family_child_apps_action, () -> {
-            dialog.dismiss();
-            showFamilyChildApps();
-        });
+        View childCard = familyManagementDashboardCard("child", R.id.familyManagementCardChild,
+                R.string.family_profile_child_short, childSummary, R.drawable.ic_family_child,
+                0xFFB89AFF, getString(R.string.family_time_label,
+                        durationText(snapshot.childUsedMs), durationText(childRemainingMs)),
+                () -> showFamilyChildManagementDetail());
+        View xboxCard = familyManagementDashboardCard("xbox", R.id.familyManagementCardXbox,
+                R.string.family_profile_xbox_short, xboxSummary, R.drawable.ic_family_xbox,
+                0xFF70DFA3, getString(R.string.family_time_label,
+                        durationText(snapshot.xboxUsedMs), durationText(xboxRemainingMs)),
+                () -> showFamilyXboxManagementDetail());
+        View securityCard = familyManagementDashboardCard("security", R.id.familyManagementCardSecurity,
+                R.string.family_management_card_security,
+                getString(R.string.family_management_security_summary,
+                        getString(launcherState.hasParentalCredential() ? R.string.family_management_sequence_ready
+                                : R.string.family_sequence_required),
+                        getString(snapshot.enabled ? R.string.family_management_state_active
+                                : R.string.family_management_state_inactive)),
+                R.drawable.ic_lock, 0xFF83B9FF,
+                getString(R.string.family_management_card_security), () -> showFamilySecurityDetail());
+        View appsCard = familyManagementDashboardCard("apps", R.id.familyManagementCardApps,
+                R.string.family_management_card_apps,
+                getString(R.string.family_management_allowed_apps_count, familyAllowedChildAppCount()),
+                R.drawable.ic_home_settings, 0xFFFFCC73,
+                getString(R.string.family_management_card_apps), () -> showFamilyAllowedAppsDetail());
+        View monitorCard = familyManagementDashboardCard("monitor", R.id.familyManagementCardMonitor,
+                R.string.family_management_card_monitoring,
+                familyReliabilityStatus(snapshot, usageAccess), R.drawable.ic_av, 0xFF83B9FF,
+                getString(R.string.family_management_card_monitoring) + ": "
+                        + familyReliabilityStatus(snapshot, usageAccess), () -> showFamilyMonitoringDetail());
 
-        LinearLayout overlaySection = familyManagementSection(content, R.string.family_time_bar_section);
-        TextView overlayHelp = familyText(R.string.family_time_bar_help, 13, 0xFFC5CFDD);
-        overlaySection.addView(overlayHelp, familyManagementNoteLp());
-        TextView overlayStatus = familyText(FamilyTimeOverlay.hasPermission(this)
-                ? R.string.family_time_bar_permission_granted : R.string.family_time_bar_permission_missing,
-                13, FamilyTimeOverlay.hasPermission(this) ? 0xFF9FE2BE : 0xFFFFD180);
-        familyOverlayPermissionStatus = overlayStatus;
-        overlaySection.addView(overlayStatus, familyManagementNoteLp());
-        dialog.setOnDismissListener(ignored -> {
-            if (familyOverlayPermissionStatus == overlayStatus) familyOverlayPermissionStatus = null;
-        });
-        addFamilyManagementSectionAction(overlaySection, R.string.family_time_bar_open_settings,
-                this::openFamilyOverlaySettings);
+        LinearLayout firstRow = familyManagementDashboardRow(cards);
+        firstRow.addView(childCard, familyManagementDashboardCardLp(true));
+        firstRow.addView(xboxCard, familyManagementDashboardCardLp(false));
+        LinearLayout secondRow = familyManagementDashboardRow(cards);
+        secondRow.addView(securityCard, familyManagementDashboardCardLp(true));
+        secondRow.addView(appsCard, familyManagementDashboardCardLp(false));
+        LinearLayout.LayoutParams monitorLp = new LinearLayout.LayoutParams(-1, dp(96));
+        monitorLp.topMargin = dp(10);
+        cards.addView(monitorCard, monitorLp);
 
-        boolean[] showTimeBar = { snapshot.timeBarVisible };
-        TextView visibilityOption = familyChoice(getString(showTimeBar[0]
-                ? R.string.family_time_bar_visible : R.string.family_time_bar_hidden), true, () -> { });
-        visibilityOption.setId(View.generateViewId());
-        visibilityOption.setOnClickListener(view -> {
-            boolean next = !showTimeBar[0];
-            if (familyStore.setTimeBarVisible(next)) {
-                showTimeBar[0] = next;
-                visibilityOption.setText(getString(next ? R.string.family_time_bar_visible
-                        : R.string.family_time_bar_hidden));
-            } else Toast.makeText(this, R.string.family_storage_error, Toast.LENGTH_LONG).show();
-        });
-        overlaySection.addView(visibilityOption, familyManagementActionLp());
+        childCard.setNextFocusRightId(xboxCard.getId());
+        childCard.setNextFocusDownId(securityCard.getId());
+        xboxCard.setNextFocusLeftId(childCard.getId());
+        xboxCard.setNextFocusDownId(appsCard.getId());
+        securityCard.setNextFocusUpId(childCard.getId());
+        securityCard.setNextFocusRightId(appsCard.getId());
+        securityCard.setNextFocusDownId(monitorCard.getId());
+        appsCard.setNextFocusUpId(xboxCard.getId());
+        appsCard.setNextFocusLeftId(securityCard.getId());
+        appsCard.setNextFocusDownId(monitorCard.getId());
+        monitorCard.setNextFocusUpId(securityCard.getId());
+        monitorCard.setNextFocusDownId(R.id.familyManagementDetailBack);
 
-        FamilyProfileStore.TimeBarCorner[] barCorner = { snapshot.timeBarCorner };
-        TextView cornerOption = familyChoice(timeBarCornerLabel(barCorner[0]), true, () -> { });
-        cornerOption.setId(View.generateViewId());
-        cornerOption.setOnClickListener(view -> {
-            FamilyProfileStore.TimeBarCorner next = barCorner[0] == FamilyProfileStore.TimeBarCorner.LEFT
-                    ? FamilyProfileStore.TimeBarCorner.RIGHT : FamilyProfileStore.TimeBarCorner.LEFT;
-            if (familyStore.setTimeBarCorner(next)) {
-                barCorner[0] = next;
-                cornerOption.setText(timeBarCornerLabel(next));
-            } else Toast.makeText(this, R.string.family_storage_error, Toast.LENGTH_LONG).show();
-        });
-        overlaySection.addView(cornerOption, familyManagementActionLp());
-
-        FamilyProfileStore.TimeBarContent[] barContent = { snapshot.timeBarContent };
-        TextView contentOption = familyChoice(timeBarContentLabel(barContent[0]), true, () -> { });
-        contentOption.setId(View.generateViewId());
-        contentOption.setOnClickListener(view -> {
-            FamilyProfileStore.TimeBarContent next = nextTimeBarContent(barContent[0]);
-            if (familyStore.setTimeBarContent(next)) {
-                barContent[0] = next;
-                contentOption.setText(timeBarContentLabel(next));
-            } else Toast.makeText(this, R.string.family_storage_error, Toast.LENGTH_LONG).show();
-        });
-        overlaySection.addView(contentOption, familyManagementActionLp());
-
-        String inputName = getString(R.string.family_xbox_input_required);
-        TvInputInfo configured = tvInputInfo(snapshot.xboxInputId);
-        if (configured != null) {
-            CharSequence label = configured.loadLabel(this);
-            inputName = label == null ? snapshot.xboxInputId : label.toString();
-        }
-        TextView input = new TextView(this);
-        input.setText(getString(R.string.family_xbox_input_status, getString(R.string.family_xbox_input), inputName));
-        input.setTextColor(Color.WHITE);
-        input.setTextSize(14);
-        LinearLayout xboxSection = familyManagementSection(content,
-                R.string.family_management_xbox_section);
-        xboxSection.addView(input, familyManagementNoteLp());
-        TextView limitations = familyText(R.string.family_limitations, 13, 0xFFFFD180);
-        LinearLayout.LayoutParams limitLp = familyManagementNoteLp();
-        limitLp.topMargin = dp(7);
-        xboxSection.addView(limitations, limitLp);
-        addFamilyManagementSectionAction(xboxSection, R.string.family_xbox_input, () -> {
-            dialog.dismiss();
-            showFamilyInputChooser();
-        });
-        TextView lastAction = addFamilyManagementSectionAction(accessSection,
-                snapshot.enabled ? R.string.family_disable : R.string.family_enable,
-                () -> {
-                    if (!snapshot.enabled && (!launcherState.hasParentalCredential() || launcherState.hasStorageError())) {
-                        Toast.makeText(this, R.string.family_sequence_required, Toast.LENGTH_LONG).show();
-                        return;
-                    }
-                    if (!snapshot.enabled && !FamilyUsageAccess.isGranted(this)) {
-                        dialog.dismiss();
-                        Toast.makeText(this, R.string.family_monitor_required, Toast.LENGTH_LONG).show();
-                        openFamilyUsageAccessSettings();
-                        return;
-                    }
-                    if (!snapshot.enabled) {
-                        ZonedDateTime verifiedNow = familyNow();
-                        if (!familyStore.confirmClock(verifiedNow.toInstant().toEpochMilli(),
-                                SystemClock.elapsedRealtime(), verifiedNow.toLocalDate())) {
-                            Toast.makeText(this, R.string.family_storage_error, Toast.LENGTH_LONG).show();
-                            return;
-                        }
-                    }
-                    if (!familyStore.setEnabled(!snapshot.enabled)) {
-                        Toast.makeText(this, R.string.family_storage_error, Toast.LENGTH_LONG).show();
-                        return;
-                    }
-                    if (snapshot.enabled) {
-                        finishFamilyUsageSession();
-                        stopService(new Intent(this, FamilySessionMonitorService.class));
-                        setActiveFamilyProfile(null);
-                    } else {
-                        reloadTiles();
-                    }
-                    dialog.dismiss();
-                    updateFamilyStatus();
-                    showFamilyManagementPanel();
-                });
-        LinearLayout toolsSection = null;
-        if (snapshot.enabled) {
-            toolsSection = familyManagementSection(content, R.string.family_management_tools_section);
-            lastAction = addFamilyManagementSectionAction(toolsSection, R.string.family_diagnostic_title,
-                    () -> showFamilyDiagnostics(dialog));
-            lastAction = addFamilyManagementSectionAction(toolsSection, R.string.family_statistics_title,
-                    () -> { dialog.dismiss(); showFamilyStatistics(); });
-            lastAction = addFamilyManagementSectionAction(toolsSection, R.string.family_advanced_schedule,
-                    () -> { dialog.dismiss(); showFamilyScheduleChooser(); });
-            lastAction = addFamilyManagementSectionAction(toolsSection, R.string.family_add_time_child, () ->
-                    chooseFamilyTimeExtension(dialog, FamilyProfileStore.Profile.CHILD_TV, today));
-            lastAction = addFamilyManagementSectionAction(xboxSection, R.string.family_add_time_xbox, () ->
-                    chooseFamilyTimeExtension(dialog, FamilyProfileStore.Profile.XBOX, today));
-        }
-        if (snapshot.clockUncertain) {
-            if (toolsSection == null) toolsSection = familyManagementSection(content,
-                    R.string.family_management_tools_section);
-            toolsSection.addView(familyText(R.string.family_clock_uncertain, 13, 0xFFFFD180),
-                    familyManagementNoteLp());
-            lastAction = addFamilyManagementSectionAction(toolsSection, R.string.family_clock_confirm, () -> {
-                ZonedDateTime confirmedNow = familyNow();
-                if (familyStore.confirmClock(confirmedNow.toInstant().toEpochMilli(),
-                        SystemClock.elapsedRealtime(), confirmedNow.toLocalDate())) {
-                    dialog.dismiss();
-                    setActiveFamilyProfile(null);
-                    showFamilyManagementPanel();
-                } else Toast.makeText(this, R.string.family_storage_error, Toast.LENGTH_LONG).show();
-            });
-        }
         TextView close = familyChoice(getString(R.string.close), true, () -> {
             dialog.dismiss();
             if (familyEnabled() && activeFamilyProfile == null && adapter != null) reloadApps(false);
             maybeShowFamilyProfileSelector();
         });
-        close.setId(View.generateViewId());
+        close.setId(R.id.familyManagementDetailBack);
         close.setGravity(Gravity.CENTER);
         close.setPadding(dp(22), dp(8), dp(22), dp(8));
         close.setBackgroundResource(R.drawable.focus_button_bg);
         LinearLayout footer = new LinearLayout(this);
-        footer.setOrientation(LinearLayout.HORIZONTAL);
         footer.setGravity(Gravity.CENTER_VERTICAL);
         footer.addView(familyText(R.string.family_management_back_hint, 13, 0xFF9EADC0),
                 new LinearLayout.LayoutParams(0, -2, 1f));
         footer.addView(close, new LinearLayout.LayoutParams(-2, -2));
         panel.addView(footer, new LinearLayout.LayoutParams(-1, -2));
-        if (lastAction != null) {
-            lastAction.setNextFocusDownId(close.getId());
-            close.setNextFocusUpId(lastAction.getId());
-        }
-        firstAction.setNextFocusUpId(firstAction.getId());
-
-        Runnable returnToProfiles = () -> {
+        dialog.setOnCancelListener(ignored -> {
             if (familyEnabled() && activeFamilyProfile == null && adapter != null) reloadApps(false);
             maybeShowFamilyProfileSelector();
-        };
-        dialog.setOnCancelListener(ignored -> returnToProfiles.run());
+        });
+        showFamilyManagementSurface(dialog, panel);
 
-        dialog.setContentView(panel);
+        View focus = "xbox".equals(familyManagementFocusCard) ? xboxCard
+                : "security".equals(familyManagementFocusCard) ? securityCard
+                : "apps".equals(familyManagementFocusCard) ? appsCard
+                : "monitor".equals(familyManagementFocusCard) ? monitorCard : childCard;
+        focus.requestFocus();
+    }
+
+    private LinearLayout familyManagementDashboardRow(LinearLayout cards) {
+        LinearLayout row = new LinearLayout(this);
+        row.setOrientation(LinearLayout.HORIZONTAL);
+        LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(-1, -2);
+        lp.topMargin = dp(10);
+        cards.addView(row, lp);
+        return row;
+    }
+
+    private LinearLayout.LayoutParams familyManagementDashboardCardLp(boolean first) {
+        LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(0, dp(112), 1f);
+        if (first) lp.setMarginEnd(dp(10));
+        return lp;
+    }
+
+    private View familyManagementDashboardCard(String key, int id, int titleRes, String summary,
+                                                int iconRes, int accent, String contentDescription,
+                                                Runnable action) {
+        LinearLayout card = new LinearLayout(this);
+        card.setId(id);
+        card.setTag(key);
+        card.setOrientation(LinearLayout.VERTICAL);
+        card.setGravity(Gravity.CENTER_VERTICAL);
+        card.setPadding(dp(17), dp(13), dp(17), dp(12));
+        card.setBackgroundResource(R.drawable.family_management_dashboard_card);
+        card.setFocusable(true);
+        card.setFocusableInTouchMode(true);
+        card.setClickable(true);
+        card.setOnClickListener(view -> {
+            familyManagementFocusCard = key;
+            action.run();
+        });
+        card.setContentDescription(contentDescription);
+
+        LinearLayout titleRow = new LinearLayout(this);
+        titleRow.setGravity(Gravity.CENTER_VERTICAL);
+        ImageView icon = new ImageView(this);
+        icon.setImageResource(iconRes);
+        icon.setColorFilter(accent);
+        icon.setScaleType(ImageView.ScaleType.FIT_CENTER);
+        LinearLayout.LayoutParams iconLp = new LinearLayout.LayoutParams(dp(25), dp(25));
+        iconLp.setMarginEnd(dp(12));
+        titleRow.addView(icon, iconLp);
+        TextView title = familyText(titleRes, 19, Color.WHITE);
+        title.setSingleLine(true);
+        title.setEllipsize(TextUtils.TruncateAt.END);
+        titleRow.addView(title, new LinearLayout.LayoutParams(0, -2, 1f));
+        card.addView(titleRow, new LinearLayout.LayoutParams(-1, -2));
+
+        TextView detail = familyText(summary, 14, 0xFFD2DCEB);
+        detail.setSingleLine(true);
+        detail.setEllipsize(TextUtils.TruncateAt.END);
+        LinearLayout.LayoutParams detailLp = new LinearLayout.LayoutParams(-1, -2);
+        detailLp.topMargin = dp(10);
+        card.addView(detail, detailLp);
+        return card;
+    }
+
+    private void showFamilyManagementDetail(String cardKey, int title, String summary,
+                                            FamilyManagementDetailContent detailContent) {
+        familyManagementFocusCard = cardKey;
+        Dialog dialog = new Dialog(this);
+        dialog.requestWindowFeature(Window.FEATURE_NO_TITLE);
+        LinearLayout panel = new LinearLayout(this);
+        panel.setOrientation(LinearLayout.VERTICAL);
+        panel.setPadding(dp(38), dp(25), dp(38), dp(18));
+        panel.setBackgroundResource(R.drawable.family_management_background);
+        TextView titleView = familyText(title, 27, Color.WHITE);
+        panel.addView(titleView, new LinearLayout.LayoutParams(-1, -2));
+        TextView summaryView = familyText(summary, 14, 0xFFB9C8DB);
+        LinearLayout.LayoutParams summaryLp = new LinearLayout.LayoutParams(-1, -2);
+        summaryLp.topMargin = dp(4);
+        panel.addView(summaryView, summaryLp);
+
+        ScrollView scroll = new ScrollView(this);
+        scroll.setFillViewport(false);
+        LinearLayout content = new LinearLayout(this);
+        content.setOrientation(LinearLayout.VERTICAL);
+        scroll.addView(content, new ScrollView.LayoutParams(-1, -2));
+        LinearLayout.LayoutParams scrollLp = new LinearLayout.LayoutParams(-1, 0, 1f);
+        scrollLp.topMargin = dp(15);
+        scrollLp.bottomMargin = dp(10);
+        panel.addView(scroll, scrollLp);
+        detailContent.addTo(content, dialog);
+
+        TextView back = familyChoice(getString(R.string.family_management_detail_back), true, () -> {
+            dialog.dismiss();
+            showFamilyManagementPanel();
+        });
+        back.setId(R.id.familyManagementDetailBack);
+        back.setGravity(Gravity.CENTER);
+        back.setBackgroundResource(R.drawable.focus_button_bg);
+        LinearLayout footer = new LinearLayout(this);
+        footer.setGravity(Gravity.CENTER_VERTICAL);
+        footer.addView(familyText(R.string.family_management_back_hint, 13, 0xFF9EADC0),
+                new LinearLayout.LayoutParams(0, -2, 1f));
+        footer.addView(back, new LinearLayout.LayoutParams(-2, -2));
+        panel.addView(footer, new LinearLayout.LayoutParams(-1, -2));
+        dialog.setOnCancelListener(ignored -> {
+            dialog.dismiss();
+            showFamilyManagementPanel();
+        });
+        showFamilyManagementSurface(dialog, panel);
+        View first = firstFocusable(content);
+        (first == null ? back : first).requestFocus();
+    }
+
+    private View firstFocusable(ViewGroup parent) {
+        for (int i = 0; i < parent.getChildCount(); i++) {
+            View child = parent.getChildAt(i);
+            if (child.isFocusable() && child.getVisibility() == View.VISIBLE) return child;
+            if (child instanceof ViewGroup) {
+                View nested = firstFocusable((ViewGroup) child);
+                if (nested != null) return nested;
+            }
+        }
+        return null;
+    }
+
+    private void showFamilyManagementSurface(Dialog dialog, View content) {
+        dialog.setContentView(content);
         configureFamilyDialog(dialog, 0f);
         dialog.show();
         Window window = dialog.getWindow();
@@ -3133,49 +3143,267 @@ public class MainActivity extends Activity implements AppAdapter.TileListener {
             window.setGravity(Gravity.FILL);
             window.setLayout(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT);
         }
-        firstAction.requestFocus();
     }
 
-    private LinearLayout familyManagementSection(LinearLayout content, int title) {
+    private LinearLayout familyManagementDetailSection(LinearLayout content, int title) {
         LinearLayout section = new LinearLayout(this);
         section.setOrientation(LinearLayout.VERTICAL);
-        section.setPadding(dp(16), dp(13), dp(16), dp(15));
+        section.setPadding(dp(16), dp(12), dp(16), dp(13));
         section.setBackgroundResource(R.drawable.family_management_card_background);
-        section.addView(familyText(title, 16, 0xFFB9D8FC),
-                new LinearLayout.LayoutParams(-1, -2));
+        TextView heading = familyText(title, 16, 0xFFB9D8FC);
+        section.addView(heading, new LinearLayout.LayoutParams(-1, -2));
         LinearLayout.LayoutParams sectionLp = new LinearLayout.LayoutParams(-1, -2);
-        sectionLp.topMargin = dp(11);
+        sectionLp.topMargin = dp(10);
         content.addView(section, sectionLp);
         return section;
     }
 
-    private TextView addFamilyManagementSummaryCard(LinearLayout row, int title, String value,
-                                                    int valueColor, boolean isStatus) {
-        LinearLayout card = new LinearLayout(this);
-        card.setOrientation(LinearLayout.VERTICAL);
-        card.setPadding(dp(13), dp(11), dp(13), dp(11));
-        card.setMinimumHeight(dp(82));
-        card.setBackgroundResource(R.drawable.family_management_summary_background);
-        card.addView(familyText(title, 13, 0xFF9EADC0),
-                new LinearLayout.LayoutParams(-1, -2));
-        TextView detail = familyText(value, isStatus ? 12 : 13, valueColor);
-        detail.setGravity(Gravity.TOP);
-        detail.setMaxLines(isStatus ? 3 : 2);
-        detail.setEllipsize(TextUtils.TruncateAt.END);
-        LinearLayout.LayoutParams detailLp = new LinearLayout.LayoutParams(-1, -2);
-        detailLp.topMargin = dp(4);
-        card.addView(detail, detailLp);
-        LinearLayout.LayoutParams cardLp = new LinearLayout.LayoutParams(0, -2, 1f);
-        cardLp.setMarginEnd(dp(8));
-        row.addView(card, cardLp);
-        return detail;
-    }
-
-    private TextView addFamilyManagementSectionAction(LinearLayout section, int label, Runnable action) {
+    private TextView familyManagementDetailAction(LinearLayout section, int label, Runnable action) {
         TextView button = familyChoice(getString(label), true, action);
         button.setId(View.generateViewId());
         section.addView(button, familyManagementActionLp());
         return button;
+    }
+
+    private void familyManagementDetailNote(LinearLayout section, CharSequence text, int color) {
+        TextView note = familyText(text.toString(), 14, color);
+        note.setGravity(Gravity.CENTER_VERTICAL);
+        LinearLayout.LayoutParams lp = familyManagementNoteLp();
+        lp.topMargin = dp(8);
+        section.addView(note, lp);
+    }
+
+    private void showFamilyChildManagementDetail() {
+        LocalDate today = familyToday();
+        FamilyProfileStore.Snapshot snapshot = familyStore.snapshot(today);
+        long remaining = snapshot.remainingMs(FamilyProfileStore.Profile.CHILD_TV, today);
+        String summary = getString(R.string.family_management_time_summary,
+                familyDisplayMinutes(snapshot.childUsedMs),
+                familyDisplayMinutes(safeAdd(snapshot.childUsedMs, remaining)),
+                familyRemainingMinutes(remaining));
+        showFamilyManagementDetail("child", R.string.family_profile_child, summary, (content, dialog) -> {
+            LinearLayout time = familyManagementDetailSection(content, R.string.family_management_section_time);
+            familyManagementDetailNote(time, getString(R.string.family_time_hours), 0xFFD2DCEB);
+            familyManagementDetailNote(time, getString(R.string.family_time_label,
+                    durationText(snapshot.childUsedMs), durationText(remaining)), 0xFFD2DCEB);
+            LinearLayout actions = familyManagementDetailSection(content, R.string.family_management_section_settings);
+            if (snapshot.enabled) {
+                familyManagementDetailAction(actions, R.string.family_advanced_schedule, () -> {
+                    showFamilyScheduleChooser(dialog);
+                });
+                familyManagementDetailAction(actions, R.string.family_add_time_child, () ->
+                        chooseFamilyTimeExtension(dialog, FamilyProfileStore.Profile.CHILD_TV, today));
+            }
+        });
+    }
+
+    private void showFamilyXboxManagementDetail() {
+        LocalDate today = familyToday();
+        FamilyProfileStore.Snapshot snapshot = familyStore.snapshot(today);
+        long remaining = snapshot.remainingMs(FamilyProfileStore.Profile.XBOX, today);
+        String summary = getString(R.string.family_management_time_summary,
+                familyDisplayMinutes(snapshot.xboxUsedMs),
+                familyDisplayMinutes(safeAdd(snapshot.xboxUsedMs, remaining)),
+                familyRemainingMinutes(remaining));
+        String inputName = getString(R.string.family_xbox_input_required);
+        TvInputInfo configured = tvInputInfo(snapshot.xboxInputId);
+        if (configured != null) {
+            CharSequence label = configured.loadLabel(this);
+            inputName = label == null ? snapshot.xboxInputId : label.toString();
+        }
+        String finalInputName = inputName;
+        showFamilyManagementDetail("xbox", R.string.family_profile_xbox_short, summary, (content, dialog) -> {
+            LinearLayout input = familyManagementDetailSection(content, R.string.family_management_section_input);
+            familyManagementDetailNote(input, getString(R.string.family_xbox_input_status,
+                    getString(R.string.family_xbox_input), finalInputName), 0xFFD2DCEB);
+            familyManagementDetailNote(input, getString(R.string.family_management_xbox_limit_note),
+                    0xFFFFD180);
+            familyManagementDetailAction(input, R.string.family_xbox_input, () -> {
+                showFamilyInputChooser(dialog);
+            });
+            if (snapshot.enabled) {
+                LinearLayout actions = familyManagementDetailSection(content,
+                        R.string.family_management_section_settings);
+                familyManagementDetailAction(actions, R.string.family_advanced_schedule, () -> {
+                    showFamilyScheduleChooser(dialog);
+                });
+                familyManagementDetailAction(actions, R.string.family_add_time_xbox, () ->
+                        chooseFamilyTimeExtension(dialog, FamilyProfileStore.Profile.XBOX, today));
+            }
+        });
+    }
+
+    private void showFamilySecurityDetail() {
+        FamilyProfileStore.Snapshot snapshot = familyStore.snapshot(familyToday());
+        boolean credential = launcherState.hasParentalCredential();
+        String summary = getString(R.string.family_management_security_summary,
+                getString(credential ? R.string.family_management_sequence_ready : R.string.family_sequence_required),
+                getString(snapshot.enabled ? R.string.family_management_state_active
+                        : R.string.family_management_state_inactive));
+        showFamilyManagementDetail("security", R.string.family_management_card_security, summary,
+                (content, dialog) -> {
+                    LinearLayout security = familyManagementDetailSection(content,
+                            R.string.family_management_section_security);
+                    familyManagementDetailNote(security, summary,
+                            snapshot.enabled ? 0xFF9FE2BE : 0xFFD2DCEB);
+                    familyManagementDetailAction(security, R.string.sequence_change, this::changeUnlockSequence);
+                    familyManagementDetailAction(security,
+                            snapshot.enabled ? R.string.family_disable : R.string.family_enable,
+                            () -> toggleFamilyProtection(dialog));
+                });
+    }
+
+    private void toggleFamilyProtection(Dialog dialog) {
+        FamilyProfileStore.Snapshot snapshot = familyStore.snapshot(familyToday());
+        if (!snapshot.enabled && (!launcherState.hasParentalCredential() || launcherState.hasStorageError())) {
+            Toast.makeText(this, R.string.family_sequence_required, Toast.LENGTH_LONG).show();
+            return;
+        }
+        if (!snapshot.enabled && !FamilyUsageAccess.isGranted(this)) {
+            Toast.makeText(this, R.string.family_monitor_required, Toast.LENGTH_LONG).show();
+            openFamilyUsageAccessSettings();
+            return;
+        }
+        if (!snapshot.enabled) {
+            ZonedDateTime verifiedNow = familyNow();
+            if (!familyStore.confirmClock(verifiedNow.toInstant().toEpochMilli(),
+                    SystemClock.elapsedRealtime(), verifiedNow.toLocalDate())) {
+                Toast.makeText(this, R.string.family_storage_error, Toast.LENGTH_LONG).show();
+                return;
+            }
+        }
+        if (!familyStore.setEnabled(!snapshot.enabled)) {
+            Toast.makeText(this, R.string.family_storage_error, Toast.LENGTH_LONG).show();
+            return;
+        }
+        if (snapshot.enabled) {
+            finishFamilyUsageSession();
+            stopService(new Intent(this, FamilySessionMonitorService.class));
+            setActiveFamilyProfile(null);
+        } else {
+            reloadTiles();
+        }
+        dialog.dismiss();
+        updateFamilyStatus();
+        showFamilyManagementPanel();
+    }
+
+    private void showFamilyAllowedAppsDetail() {
+        int count = familyAllowedChildAppCount();
+        String summary = getString(R.string.family_management_allowed_apps_count, count);
+        showFamilyManagementDetail("apps", R.string.family_management_card_apps, summary,
+                (content, dialog) -> {
+                    LinearLayout apps = familyManagementDetailSection(content,
+                            R.string.family_management_section_apps);
+                    familyManagementDetailNote(apps, summary, 0xFFD2DCEB);
+                    familyManagementDetailNote(apps,
+                            getString(R.string.family_management_apps_limit_note), 0xFFFFD180);
+                    familyManagementDetailAction(apps, R.string.family_child_apps_action, () -> {
+                        showFamilyChildApps();
+                    });
+                });
+    }
+
+    private void showFamilyMonitoringDetail() {
+        LocalDate today = familyToday();
+        ZonedDateTime now = familyNow();
+        familyStore.observeClock(now.toInstant().toEpochMilli(), SystemClock.elapsedRealtime(), today);
+        FamilyProfileStore.Snapshot snapshot = familyStore.snapshot(today);
+        boolean usageAccess = FamilyUsageAccess.isGranted(this);
+        String status = familyReliabilityStatus(snapshot, usageAccess);
+        showFamilyManagementDetail("monitor", R.string.family_management_card_monitoring, status,
+                (content, dialog) -> {
+                    LinearLayout operations = familyManagementDetailSection(content,
+                            R.string.family_management_section_monitoring);
+                    familyManagementDetailNote(operations, status, familyReliabilityColor(snapshot, usageAccess));
+                    TextView usage = familyText(usageAccess ? R.string.family_management_usage_ready
+                            : R.string.family_management_usage_missing, 14,
+                            usageAccess ? 0xFF9FE2BE : 0xFFFFD180);
+                    usage.setContentDescription(getString(usageAccess ? R.string.family_usage_access_granted
+                            : R.string.family_usage_access_missing));
+                    operations.addView(usage, familyManagementNoteLp());
+                    familyManagementDetailAction(operations, R.string.family_usage_access_open,
+                            this::openFamilyUsageAccessSettings);
+
+                    LinearLayout bar = familyManagementDetailSection(content, R.string.family_time_bar_section);
+                    familyManagementDetailNote(bar, getString(R.string.family_time_bar_help), 0xFFD2DCEB);
+                    TextView overlayStatus = familyText(FamilyTimeOverlay.hasPermission(this)
+                            ? R.string.family_time_bar_permission_granted
+                            : R.string.family_time_bar_permission_missing, 14,
+                            FamilyTimeOverlay.hasPermission(this) ? 0xFF9FE2BE : 0xFFFFD180);
+                    familyOverlayPermissionStatus = overlayStatus;
+                    bar.addView(overlayStatus, familyManagementNoteLp());
+                    dialog.setOnDismissListener(ignored -> {
+                        if (familyOverlayPermissionStatus == overlayStatus) familyOverlayPermissionStatus = null;
+                    });
+                    familyManagementDetailAction(bar, R.string.family_time_bar_open_settings,
+                            this::openFamilyOverlaySettings);
+
+                    boolean[] visible = {snapshot.timeBarVisible};
+                    TextView visibility = familyChoice(getString(visible[0]
+                            ? R.string.family_time_bar_visible : R.string.family_time_bar_hidden), true, () -> { });
+                    visibility.setOnClickListener(view -> {
+                        boolean next = !visible[0];
+                        if (familyStore.setTimeBarVisible(next)) {
+                            visible[0] = next;
+                            visibility.setText(getString(next ? R.string.family_time_bar_visible
+                                    : R.string.family_time_bar_hidden));
+                        } else Toast.makeText(this, R.string.family_storage_error, Toast.LENGTH_LONG).show();
+                    });
+                    bar.addView(visibility, familyManagementActionLp());
+
+                    FamilyProfileStore.TimeBarCorner[] corner = {snapshot.timeBarCorner};
+                    TextView cornerOption = familyChoice(timeBarCornerLabel(corner[0]), true, () -> { });
+                    cornerOption.setOnClickListener(view -> {
+                        FamilyProfileStore.TimeBarCorner next = corner[0]
+                                == FamilyProfileStore.TimeBarCorner.LEFT
+                                ? FamilyProfileStore.TimeBarCorner.RIGHT : FamilyProfileStore.TimeBarCorner.LEFT;
+                        if (familyStore.setTimeBarCorner(next)) {
+                            corner[0] = next;
+                            cornerOption.setText(timeBarCornerLabel(next));
+                        } else Toast.makeText(this, R.string.family_storage_error, Toast.LENGTH_LONG).show();
+                    });
+                    bar.addView(cornerOption, familyManagementActionLp());
+
+                    FamilyProfileStore.TimeBarContent[] barContent = {snapshot.timeBarContent};
+                    TextView contentOption = familyChoice(timeBarContentLabel(barContent[0]), true, () -> { });
+                    contentOption.setOnClickListener(view -> {
+                        FamilyProfileStore.TimeBarContent next = nextTimeBarContent(barContent[0]);
+                        if (familyStore.setTimeBarContent(next)) {
+                            barContent[0] = next;
+                            contentOption.setText(timeBarContentLabel(next));
+                        } else Toast.makeText(this, R.string.family_storage_error, Toast.LENGTH_LONG).show();
+                    });
+                    bar.addView(contentOption, familyManagementActionLp());
+
+                    LinearLayout history = familyManagementDetailSection(content,
+                            R.string.family_management_section_history);
+                    familyManagementDetailAction(history, R.string.family_statistics_title, () -> {
+                        showFamilyStatistics();
+                    });
+                    if (snapshot.enabled) {
+                        LinearLayout tools = familyManagementDetailSection(content,
+                                R.string.family_management_section_tools);
+                        familyManagementDetailAction(tools, R.string.family_diagnostic_title,
+                                () -> showFamilyDiagnostics(dialog));
+                        familyManagementDetailAction(tools, R.string.family_advanced_schedule, () -> {
+                            showFamilyScheduleChooser(dialog);
+                        });
+                    }
+                    if (snapshot.clockUncertain) {
+                        familyManagementDetailNote(operations, getString(R.string.family_clock_uncertain),
+                                0xFFFFD180);
+                        familyManagementDetailAction(operations, R.string.family_clock_confirm, () -> {
+                            ZonedDateTime confirmedNow = familyNow();
+                            if (familyStore.confirmClock(confirmedNow.toInstant().toEpochMilli(),
+                                    SystemClock.elapsedRealtime(), confirmedNow.toLocalDate())) {
+                                dialog.dismiss();
+                                setActiveFamilyProfile(null);
+                                showFamilyManagementPanel();
+                            } else Toast.makeText(this, R.string.family_storage_error, Toast.LENGTH_LONG).show();
+                        });
+                    }
+                });
     }
 
     private LinearLayout.LayoutParams familyManagementActionLp() {
@@ -3189,7 +3417,6 @@ public class MainActivity extends Activity implements AppAdapter.TileListener {
         lp.topMargin = dp(5);
         return lp;
     }
-
     private int familyAllowedChildAppCount() {
         return familyStore.childAllowedApps().size();
     }
@@ -3326,12 +3553,11 @@ public class MainActivity extends Activity implements AppAdapter.TileListener {
         panel.addView(saved, familyChoiceLp());
         TextView close = familyChoice(getString(R.string.close), true, () -> {
             dialog.dismiss();
-            showFamilyManagementPanel();
         });
         panel.addView(close, familyChoiceLp());
         dialog.setContentView(panel);
         dialog.setCanceledOnTouchOutside(false);
-        dialog.setOnCancelListener(ignored -> showFamilyManagementPanel());
+        dialog.setOnCancelListener(ignored -> { });
         configureFamilyDialog(dialog, 0.74f);
         dialog.show();
         sizeFamilyDialog(dialog, 0.84f);
@@ -3522,11 +3748,11 @@ public class MainActivity extends Activity implements AppAdapter.TileListener {
         if (rows.getChildCount() > 0) rows.getChildAt(0).requestFocus();
     }
 
-    private void showFamilyScheduleChooser() {
-        showFamilySchedulePage(null);
+    private void showFamilyScheduleChooser(Dialog managementParent) {
+        showFamilySchedulePage(null, managementParent);
     }
 
-    private void showFamilySchedulePage(FamilyProfileStore.Profile profile) {
+    private void showFamilySchedulePage(FamilyProfileStore.Profile profile, Dialog managementParent) {
         if (familyStore.hasStorageError()) {
             Toast.makeText(this, R.string.family_storage_error, Toast.LENGTH_LONG).show();
             return;
@@ -3540,11 +3766,11 @@ public class MainActivity extends Activity implements AppAdapter.TileListener {
                 : R.string.family_profile_xbox, 21, Color.WHITE));
         if (profile == null) {
             addFamilyManagementAction(panel, R.string.family_profile_child, () -> {
-                dialog.dismiss(); showFamilySchedulePage(FamilyProfileStore.Profile.CHILD_TV);
+                dialog.dismiss(); showFamilySchedulePage(FamilyProfileStore.Profile.CHILD_TV, managementParent);
             });
             initialFocus = panel.getChildAt(panel.getChildCount() - 1);
             addFamilyManagementAction(panel, R.string.family_profile_xbox, () -> {
-                dialog.dismiss(); showFamilySchedulePage(FamilyProfileStore.Profile.XBOX);
+                dialog.dismiss(); showFamilySchedulePage(FamilyProfileStore.Profile.XBOX, managementParent);
             });
         } else {
             TextView help = familyText(R.string.family_schedule_help, 13, 0xFFD8DDE5);
@@ -3561,8 +3787,8 @@ public class MainActivity extends Activity implements AppAdapter.TileListener {
                 FamilyTimePolicy.Schedule schedule = profile == FamilyProfileStore.Profile.XBOX
                         ? snapshot.xboxSchedule : snapshot.childSchedule;
                 String label = day.getDisplayName(java.time.format.TextStyle.FULL, Locale.getDefault());
-                TextView row = familyChoice(scheduleLabel(label, schedule), true,
-                        () -> editFamilySchedule(profile, day));
+                TextView row = familyChoice(scheduleLabel(label, schedule), true, () -> { });
+                row.setOnClickListener(view -> editFamilySchedule(profile, day, managementParent, row, label));
                 rows.addView(row, familyChoiceLp());
                 if (firstRow == null) firstRow = row;
             }
@@ -3570,8 +3796,8 @@ public class MainActivity extends Activity implements AppAdapter.TileListener {
         }
         addFamilyManagementAction(panel, R.string.close, () -> {
             dialog.dismiss();
-            if (profile != null) showFamilyScheduleChooser();
-            else showFamilyManagementPanel();
+            if (profile != null) showFamilyScheduleChooser(managementParent);
+            else if (managementParent == null) showFamilyManagementPanel();
         });
         dialog.setContentView(panel);
         configureFamilyDialog(dialog, 0.68f);
@@ -3589,7 +3815,8 @@ public class MainActivity extends Activity implements AppAdapter.TileListener {
         return String.format(Locale.getDefault(), "%02d:%02d", minute / 60, minute % 60);
     }
 
-    private void editFamilySchedule(FamilyProfileStore.Profile profile, DayOfWeek day) {
+    private void editFamilySchedule(FamilyProfileStore.Profile profile, DayOfWeek day, Dialog managementParent,
+                                    TextView scheduleRow, String dayLabel) {
         LocalDate referenceDate = LocalDate.now(FAMILY_ZONE).with(java.time.temporal.TemporalAdjusters.nextOrSame(day));
         FamilyProfileStore.Snapshot snapshot = familyStore.snapshot(referenceDate);
         if (familyStore.hasStorageError()) {
@@ -3649,7 +3876,8 @@ public class MainActivity extends Activity implements AppAdapter.TileListener {
             }
             dialog.dismiss();
             Toast.makeText(this, R.string.family_schedule_saved, Toast.LENGTH_SHORT).show();
-            showFamilySchedulePage(profile);
+            scheduleRow.setText(scheduleLabel(dayLabel,
+                    new FamilyTimePolicy.Schedule(values[0], values[1], values[2] * FamilyTimePolicy.MINUTE_MS)));
         });
         addFamilyManagementAction(panel, R.string.cancel, dialog::dismiss);
         dialog.setContentView(panel);
@@ -3668,7 +3896,7 @@ public class MainActivity extends Activity implements AppAdapter.TileListener {
         return choices[0];
     }
 
-    private void showFamilyInputChooser() {
+    private void showFamilyInputChooser(Dialog managementParent) {
         TvInputManager manager = (TvInputManager) getSystemService(TV_INPUT_SERVICE);
         List<TvInputInfo> hdmi = new ArrayList<>();
         if (manager != null) {
@@ -3678,7 +3906,6 @@ public class MainActivity extends Activity implements AppAdapter.TileListener {
         }
         if (hdmi.isEmpty()) {
             Toast.makeText(this, R.string.family_xbox_input_none, Toast.LENGTH_LONG).show();
-            showFamilyManagementPanel();
             return;
         }
         Collections.sort(hdmi, (a, b) -> String.valueOf(a.loadLabel(this)).compareToIgnoreCase(String.valueOf(b.loadLabel(this))));
@@ -3700,13 +3927,13 @@ public class MainActivity extends Activity implements AppAdapter.TileListener {
                 }
                 Toast.makeText(this, R.string.family_xbox_input_saved, Toast.LENGTH_SHORT).show();
                 dialog.dismiss();
+                managementParent.dismiss();
                 showFamilyManagementPanel();
             });
             rows.addView(choice, familyChoiceLp());
         }
         TextView cancel = familyChoice(getString(R.string.cancel), true, () -> {
             dialog.dismiss();
-            showFamilyManagementPanel();
         });
         panel.addView(cancel, familyChoiceLp());
         dialog.setContentView(panel);
