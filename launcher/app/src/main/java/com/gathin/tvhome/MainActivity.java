@@ -54,6 +54,7 @@ import android.widget.LinearLayout;
 import android.widget.PopupWindow;
 import android.widget.ScrollView;
 import android.widget.CheckBox;
+import android.widget.TextClock;
 import android.widget.TextView;
 import android.widget.Toast;
 
@@ -2368,15 +2369,63 @@ public class MainActivity extends Activity implements AppAdapter.TileListener {
 
         Dialog dialog = new Dialog(this);
         dialog.requestWindowFeature(Window.FEATURE_NO_TITLE);
-        LinearLayout panel = familyPanel();
+        FrameLayout selectorRoot = new FrameLayout(this);
+        selectorRoot.setBackgroundResource(R.drawable.family_profile_selector_bg);
+        LinearLayout panel = new LinearLayout(this);
+        panel.setOrientation(LinearLayout.VERTICAL);
         panel.setGravity(Gravity.CENTER);
         int horizontalPadding = compactProfileLayout ? 16 : 28;
         panel.setPadding(dp(horizontalPadding), dp(compactProfileLayout ? 12 : 22),
                 dp(horizontalPadding), dp(compactProfileLayout ? 12 : 18));
-        panel.setBackgroundResource(R.drawable.family_profile_selector_bg);
+        selectorRoot.addView(panel, new FrameLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
+
+        LinearLayout clockBlock = new LinearLayout(this);
+        clockBlock.setOrientation(LinearLayout.VERTICAL);
+        clockBlock.setFocusable(false);
+        clockBlock.setClickable(false);
+
+        TextClock profileTime = new TextClock(this);
+        profileTime.setId(R.id.familyProfileClockTime);
+        profileTime.setFormat12Hour("h:mm a");
+        profileTime.setFormat24Hour("HH:mm");
+        profileTime.setTextColor(0xFFF4F6FB);
+        profileTime.setTextSize(compactProfileLayout ? 22 : 27);
+        profileTime.setTypeface(getResources().getFont(R.font.outfit));
+        profileTime.setFocusable(false);
+        profileTime.setClickable(false);
+        profileTime.setIncludeFontPadding(false);
+        clockBlock.addView(profileTime, new LinearLayout.LayoutParams(-2, -2));
+
+        TextClock profileDate = new TextClock(this);
+        profileDate.setId(R.id.familyProfileClockDate);
+        profileDate.setFormat12Hour(getString(R.string.date_format));
+        profileDate.setFormat24Hour(getString(R.string.date_format));
+        profileDate.setTextColor(0xB8D1D8E2);
+        profileDate.setTextSize(10);
+        profileDate.setTypeface(getResources().getFont(R.font.outfit));
+        profileDate.setAllCaps(true);
+        profileDate.setLetterSpacing(0.08f);
+        profileDate.setSingleLine(true);
+        profileDate.setEllipsize(TextUtils.TruncateAt.END);
+        profileDate.setFocusable(false);
+        profileDate.setClickable(false);
+        profileDate.setIncludeFontPadding(false);
+        LinearLayout.LayoutParams dateLp = new LinearLayout.LayoutParams(-2, -2);
+        dateLp.topMargin = dp(2);
+        clockBlock.addView(profileDate, dateLp);
+
+        FrameLayout.LayoutParams clockLp = new FrameLayout.LayoutParams(
+                ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT,
+                Gravity.TOP | Gravity.START);
+        clockLp.setMarginStart(dp(compactProfileLayout ? 22 : 40));
+        clockLp.topMargin = dp(compactProfileLayout ? 18 : 26);
+        selectorRoot.addView(clockBlock, clockLp);
+
         TextView title = familyText(R.string.family_select_profile, compactProfileLayout ? 27 : 32, Color.WHITE);
+        title.setId(R.id.familyProfileTitle);
         title.setGravity(Gravity.CENTER);
-        panel.addView(title, new LinearLayout.LayoutParams(-1, -2));
+        panel.addView(title, new LinearLayout.LayoutParams(-2, -2));
         if (!compactProfileLayout) {
             TextView help = familyText(R.string.family_select_profile_help, 14, 0xFFC5CBD4);
             help.setGravity(Gravity.CENTER);
@@ -2535,7 +2584,7 @@ public class MainActivity extends Activity implements AppAdapter.TileListener {
             }
             return false;
         });
-        dialog.setContentView(panel);
+        dialog.setContentView(selectorRoot);
         configureFamilyDialog(dialog, 0f);
         dialog.setOnCancelListener(d -> familySelectorShowing = false);
         dialog.show();

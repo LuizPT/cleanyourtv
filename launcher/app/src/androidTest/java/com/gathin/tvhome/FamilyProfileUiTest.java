@@ -95,6 +95,7 @@ public final class FamilyProfileUiTest {
         assertProfileCard(R.id.familyProfileXbox);
         assertProfileCardsAreHorizontal();
         assertProfileArtworkResourcesAreSquare();
+        assertProfileClockIsVisibleAndDoesNotTakeFocus();
         AccessibilityNodeInfo manageNode = awaitViewById(R.id.familyManageProfiles);
         assertNotNull("Profile management action is missing", manageNode);
         assertTrue("Profile management action must be focusable", manageNode.isFocusable());
@@ -710,6 +711,34 @@ public final class FamilyProfileUiTest {
             } finally {
                 artwork.recycle();
             }
+        }
+    }
+
+    private void assertProfileClockIsVisibleAndDoesNotTakeFocus() throws Exception {
+        AccessibilityNodeInfo time = awaitViewById(R.id.familyProfileClockTime);
+        AccessibilityNodeInfo date = awaitViewById(R.id.familyProfileClockDate);
+        AccessibilityNodeInfo title = awaitViewById(R.id.familyProfileTitle);
+        assertNotNull("Profile clock time is missing", time);
+        assertNotNull("Profile clock date is missing", date);
+        assertNotNull("Profile title is missing", title);
+        try {
+            assertTrue("Profile clock time should show the system time", time.getText() != null
+                    && time.getText().length() > 0);
+            assertTrue("Profile clock date should show the localized date", date.getText() != null
+                    && date.getText().length() > 0);
+            assertFalse("Profile clock time must not take D-pad focus", time.isFocusable());
+            assertFalse("Profile clock date must not take D-pad focus", date.isFocusable());
+            Rect dateBounds = new Rect();
+            Rect titleBounds = new Rect();
+            date.getBoundsInScreen(dateBounds);
+            title.getBoundsInScreen(titleBounds);
+            assertFalse("Clock should not overlap the centered selector title; date="
+                            + dateBounds + ", title=" + titleBounds,
+                    Rect.intersects(dateBounds, titleBounds));
+        } finally {
+            time.recycle();
+            date.recycle();
+            title.recycle();
         }
     }
 
