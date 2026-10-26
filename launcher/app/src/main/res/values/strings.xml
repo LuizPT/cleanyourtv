@@ -198,6 +198,7 @@
     <string name="family_profile_option" tools:ignore="MissingTranslation">%1$s · %2$s remaining · 07:00–22:00</string>
     <string name="family_adult_auth" tools:ignore="MissingTranslation">Enter the parental PIN for the Adult profile.</string>
     <string name="family_sequence_adult_auth" tools:ignore="MissingTranslation">Enter your unlock sequence for the Adult profile.</string>
+    <string name="family_lock_profile" tools:ignore="MissingTranslation">Lock profile</string>
     <string name="family_status" tools:ignore="MissingTranslation">%1$s · %2$s remaining</string>
     <string name="family_unlimited" tools:ignore="MissingTranslation">No time limit</string>
     <string name="family_time_label" tools:ignore="MissingTranslation">%1$s used today · %2$s remaining</string>

@@ -198,6 +198,7 @@
     <string name="family_profile_option">%1$s · faltam %2$s · das 07:00 às 22:00</string>
     <string name="family_adult_auth">Introduza o PIN parental para escolher o perfil Adulto.</string>
     <string name="family_sequence_adult_auth">Introduza a sequência de desbloqueio para escolher o perfil Adulto.</string>
+    <string name="family_lock_profile">Bloquear perfil</string>
     <string name="family_status">%1$s · faltam %2$s</string>
     <string name="family_unlimited">Sem limite de tempo</string>
     <string name="family_time_label">%1$s utilizados hoje · faltam %2$s</string>

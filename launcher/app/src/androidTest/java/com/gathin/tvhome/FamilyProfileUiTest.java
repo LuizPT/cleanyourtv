@@ -8,6 +8,7 @@ import static org.junit.Assert.assertTrue;
 
 import android.app.Activity;
 import android.app.UiAutomation;
+import android.content.BroadcastReceiver;
 import android.content.Context;
 import android.content.ComponentName;
 import android.content.Intent;
@@ -360,6 +361,124 @@ public final class FamilyProfileUiTest {
         InstrumentationRegistry.getInstrumentation().sendKeyDownUpSync(KeyEvent.KEYCODE_DPAD_CENTER);
         InstrumentationRegistry.getInstrumentation().waitForIdleSync();
         assertNull("Correct sequence should authorize the Adult profile", awaitViewById(R.id.unlock_sequence_progress));
+    }
+
+    @Test public void adultReentryUsesTheWindowAndManualLockBackRequiresFreshSequence() throws Exception {
+        launchMainActivity();
+        awaitVisibleText(getString(R.string.family_select_profile));
+        clickView(R.id.familyProfileAdult);
+        awaitVisibleText(getString(R.string.sequence_auth_entry_help));
+
+        enterSequence("UDLRUDLRUU");
+        InstrumentationRegistry.getInstrumentation().sendKeyDownUpSync(KeyEvent.KEYCODE_DPAD_CENTER);
+        InstrumentationRegistry.getInstrumentation().waitForIdleSync();
+        assertEquals("A wrong sequence must not enter Adult",
+                null, field(activity, "activeFamilyProfile", FamilyTimePolicy.Profile.class));
+
+        showProfileSelectorAgain();
+        awaitVisibleText(getString(R.string.family_select_profile));
+        clickView(R.id.familyProfileAdult);
+        awaitVisibleText(getString(R.string.sequence_auth_entry_help));
+        enterSequence("UDLRUDLRUD");
+        InstrumentationRegistry.getInstrumentation().sendKeyDownUpSync(KeyEvent.KEYCODE_DPAD_CENTER);
+        InstrumentationRegistry.getInstrumentation().waitForIdleSync();
+        assertEquals(FamilyTimePolicy.Profile.ADULT,
+                field(activity, "activeFamilyProfile", FamilyTimePolicy.Profile.class));
+
+        // Leaving the profile does not renew or discard the successful authentication window.
+        InstrumentationRegistry.getInstrumentation().runOnMainSync(() -> invokePrivate(
+                activity, "setActiveFamilyProfile", new Class<?>[]{FamilyTimePolicy.Profile.class},
+                new Object[]{null}));
+        awaitVisibleText(getString(R.string.family_select_profile));
+        clickView(R.id.familyProfileAdult);
+        InstrumentationRegistry.getInstrumentation().waitForIdleSync();
+        assertNull("Reentry within fifteen minutes should not show authentication",
+                awaitViewById(R.id.unlock_sequence_progress));
+        assertEquals(FamilyTimePolicy.Profile.ADULT,
+                field(activity, "activeFamilyProfile", FamilyTimePolicy.Profile.class));
+
+        clickView(R.id.btnFamilyLock);
+        awaitVisibleText(getString(R.string.family_select_profile));
+        assertEquals("Manual lock must end the Adult session", null,
+                field(activity, "activeFamilyProfile", FamilyTimePolicy.Profile.class));
+        InstrumentationRegistry.getInstrumentation().sendKeyDownUpSync(KeyEvent.KEYCODE_BACK);
+        InstrumentationRegistry.getInstrumentation().waitForIdleSync();
+        assertEquals("Back after locking must not restore Adult", null,
+                field(activity, "activeFamilyProfile", FamilyTimePolicy.Profile.class));
+
+        showProfileSelectorAgain();
+        awaitVisibleText(getString(R.string.family_select_profile));
+        clickView(R.id.familyProfileAdult);
+        awaitVisibleText(getString(R.string.sequence_auth_entry_help));
+        assertNotNull("Manual lock must require the sequence again",
+                awaitViewById(R.id.unlock_sequence_progress));
+    }
+
+    @Test public void expiredWindowDoesNotInterruptActiveAdultAndActivityRecreationRequiresAuth() throws Exception {
+        launchMainActivity();
+        awaitVisibleText(getString(R.string.family_select_profile));
+        clickView(R.id.familyProfileAdult);
+        awaitVisibleText(getString(R.string.sequence_auth_entry_help));
+        enterSequence("UDLRUDLRUD");
+        InstrumentationRegistry.getInstrumentation().sendKeyDownUpSync(KeyEvent.KEYCODE_DPAD_CENTER);
+        InstrumentationRegistry.getInstrumentation().waitForIdleSync();
+
+        AdultProfileAccessWindow window = field(activity, "adultProfileAccessWindow", AdultProfileAccessWindow.class);
+        window.markAuthenticated(SystemClock.elapsedRealtime() - AdultProfileAccessWindow.VALIDITY_MS - 1L);
+        assertEquals("Expiry is checked only at the next Adult entry",
+                FamilyTimePolicy.Profile.ADULT,
+                field(activity, "activeFamilyProfile", FamilyTimePolicy.Profile.class));
+
+        Activity prior = activity;
+        InstrumentationRegistry.getInstrumentation().runOnMainSync(prior::finish);
+        InstrumentationRegistry.getInstrumentation().waitForIdleSync();
+        launchMainActivity();
+        awaitVisibleText(getString(R.string.family_select_profile));
+        clickView(R.id.familyProfileAdult);
+        awaitVisibleText(getString(R.string.sequence_auth_entry_help));
+        assertNotNull("A new Activity instance must require fresh authentication",
+                awaitViewById(R.id.unlock_sequence_progress));
+    }
+
+    @Test public void screenOffInvalidatesAdultReentryAuthorization() throws Exception {
+        launchMainActivity();
+        awaitVisibleText(getString(R.string.family_select_profile));
+        clickView(R.id.familyProfileAdult);
+        awaitVisibleText(getString(R.string.sequence_auth_entry_help));
+        enterSequence("UDLRUDLRUD");
+        InstrumentationRegistry.getInstrumentation().sendKeyDownUpSync(KeyEvent.KEYCODE_DPAD_CENTER);
+        InstrumentationRegistry.getInstrumentation().waitForIdleSync();
+        assertEquals(FamilyTimePolicy.Profile.ADULT,
+                field(activity, "activeFamilyProfile", FamilyTimePolicy.Profile.class));
+
+        BroadcastReceiver receiver = field(activity, "familyScreenReceiver", BroadcastReceiver.class);
+        InstrumentationRegistry.getInstrumentation().runOnMainSync(() -> receiver.onReceive(activity,
+                new Intent(Intent.ACTION_SCREEN_OFF)));
+        InstrumentationRegistry.getInstrumentation().waitForIdleSync();
+        awaitVisibleText(getString(R.string.family_select_profile));
+        assertEquals("Screen-off must leave Adult", null,
+                field(activity, "activeFamilyProfile", FamilyTimePolicy.Profile.class));
+
+        clickView(R.id.familyProfileAdult);
+        awaitVisibleText(getString(R.string.sequence_auth_entry_help));
+        assertNotNull("Screen-off must require the sequence on the next Adult entry",
+                awaitViewById(R.id.unlock_sequence_progress));
+    }
+
+    private void showProfileSelectorAgain() {
+        InstrumentationRegistry.getInstrumentation().runOnMainSync(() -> invokePrivate(
+                activity, "maybeShowFamilyProfileSelector", new Class<?>[0], new Object[0]));
+        InstrumentationRegistry.getInstrumentation().waitForIdleSync();
+    }
+
+    private static void invokePrivate(Object target, String name, Class<?>[] parameterTypes, Object[] args) {
+        try {
+            java.lang.reflect.Method method = target.getClass().getDeclaredMethod(name, parameterTypes);
+            method.setAccessible(true);
+            method.invoke(target, args);
+        } catch (Exception e) {
+            throw new AssertionError("Could not invoke test path " + name, e);
+        }
     }
 
     @Test public void legacyPinMigratesOnceAndIsNotOfferedAfterSequenceActivation() throws Exception {

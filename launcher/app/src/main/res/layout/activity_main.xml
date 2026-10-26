@@ -185,6 +185,15 @@
                     android:text="@string/settings"
                     android:drawableStart="@drawable/ic_settings"
                     android:nextFocusDown="@+id/grid" />
+
+                <TextView
+                    android:id="@+id/btnFamilyLock"
+                    style="@style/TopButton"
+                    android:visibility="gone"
+                    android:text="@string/family_lock_profile"
+                    android:drawableStart="@drawable/ic_lock"
+                    android:contentDescription="@string/family_lock_profile"
+                    android:nextFocusDown="@+id/grid" />
             </LinearLayout>
         </RelativeLayout>
 

@@ -103,6 +103,7 @@ public class MainActivity extends Activity implements AppAdapter.TileListener {
     private AppAdapter adapter;
     private LauncherState launcherState;
     private FamilyProfileStore familyStore;
+    private final AdultProfileAccessWindow adultProfileAccessWindow = new AdultProfileAccessWindow();
     private TextView familyStatus;
     private TextView familyOverlayPermissionStatus;
     private String familyManagementFocusCard = "child";
@@ -128,6 +129,7 @@ public class MainActivity extends Activity implements AppAdapter.TileListener {
     private TextView greeting;
     private View btnInputs;
     private TextView btnWifi;
+    private TextView btnFamilyLock;
     private TextView shamsiDate;
     private boolean shamsi;
     private String vpnApp;
@@ -161,6 +163,9 @@ public class MainActivity extends Activity implements AppAdapter.TileListener {
     private final Handler handler = new Handler(Looper.getMainLooper());
     private final BroadcastReceiver familyScreenReceiver = new BroadcastReceiver() {
         @Override public void onReceive(Context context, Intent intent) {
+            if (intent != null && Intent.ACTION_SCREEN_OFF.equals(intent.getAction())) {
+                adultProfileAccessWindow.invalidate();
+            }
             if (familyStore == null || intent == null) return;
             if (!familyStore.isEnabled() && !familyStore.hasPendingSession()) return;
             boolean on = Intent.ACTION_SCREEN_ON.equals(intent.getAction());
@@ -281,6 +286,7 @@ public class MainActivity extends Activity implements AppAdapter.TileListener {
         greeting = findViewById(R.id.greeting);
         familyStatus = findViewById(R.id.familyStatus);
         btnWifi = findViewById(R.id.btnWifi);
+        btnFamilyLock = findViewById(R.id.btnFamilyLock);
         shamsiDate = findViewById(R.id.shamsiDate);
         shamsi = cfg.shamsiDate;
         if (shamsi) {
@@ -372,6 +378,7 @@ public class MainActivity extends Activity implements AppAdapter.TileListener {
             showLauncherTools();
             return true;
         });
+        btnFamilyLock.setOnClickListener(v -> lockAdultProfile());
 
         // Keep focus on the top bar at its ends and at the top: Android's focus finder would otherwise
         // jump to a tile far below when there is nothing in that direction.
@@ -388,11 +395,14 @@ public class MainActivity extends Activity implements AppAdapter.TileListener {
                 return v.getId() == R.id.btnInputs
                         || (v.getId() == R.id.btnWifi && btnInputs.getVisibility() != View.VISIBLE);
             }
-            return keyCode == KeyEvent.KEYCODE_DPAD_RIGHT && v.getId() == R.id.btnSettings;
+            return keyCode == KeyEvent.KEYCODE_DPAD_RIGHT
+                    && (v.getId() == R.id.btnFamilyLock
+                    || (v.getId() == R.id.btnSettings && btnFamilyLock.getVisibility() != View.VISIBLE));
         };
         btnInputs.setOnKeyListener(pillKeys);
         btnWifi.setOnKeyListener(pillKeys);
         btnSettings.setOnKeyListener(pillKeys);
+        btnFamilyLock.setOnKeyListener(pillKeys);
 
         // Hide the glass when focus leaves the tiles.
         getWindow().getDecorView().getViewTreeObserver().addOnGlobalFocusChangeListener((oldF, newF) -> {
@@ -1128,6 +1138,7 @@ public class MainActivity extends Activity implements AppAdapter.TileListener {
 
     private void handleCredentialResult(LauncherState.PinResult result, Runnable allowed, boolean sequence) {
         if (result == LauncherState.PinResult.MATCH) {
+            if (sequence) adultProfileAccessWindow.markAuthenticated(SystemClock.elapsedRealtime());
             allowed.run();
         } else if (result == LauncherState.PinResult.LOCKED) {
             long ms = launcherState.lockRemainingMs(System.currentTimeMillis());
@@ -2310,6 +2321,10 @@ public class MainActivity extends Activity implements AppAdapter.TileListener {
     }
 
     private void updateFamilyStatus() {
+        if (btnFamilyLock != null) {
+            btnFamilyLock.setVisibility(familyEnabled() && activeFamilyProfile == FamilyTimePolicy.Profile.ADULT
+                    ? View.VISIBLE : View.GONE);
+        }
         if (familyStatus == null) return;
         if (!familyEnabled() || activeFamilyProfile == null) {
             familyStatus.setVisibility(View.GONE);
@@ -2480,8 +2495,18 @@ public class MainActivity extends Activity implements AppAdapter.TileListener {
                 Toast.makeText(this, R.string.family_sequence_required, Toast.LENGTH_LONG).show();
                 return;
             }
-            authenticate(getString(R.string.family_sequence_adult_auth),
-                    () -> selectFamilyProfile(FamilyTimePolicy.Profile.ADULT));
+            if (adultProfileAccessWindow.permitsReentry(SystemClock.elapsedRealtime())) {
+                selectFamilyProfile(FamilyTimePolicy.Profile.ADULT);
+            } else {
+                authenticate(getString(R.string.family_sequence_adult_auth), () -> {
+                    long now = SystemClock.elapsedRealtime();
+                    if (!adultProfileAccessWindow.permitsReentry(now)) {
+                        // Covers the one-time legacy-PIN migration path, which creates a sequence inline.
+                        adultProfileAccessWindow.markAuthenticated(now);
+                    }
+                    selectFamilyProfile(FamilyTimePolicy.Profile.ADULT);
+                });
+            }
         });
         addFamilyProfileTile(choices, adult);
 
@@ -2798,6 +2823,13 @@ public class MainActivity extends Activity implements AppAdapter.TileListener {
             return;
         }
         setActiveFamilyProfile(profile);
+    }
+
+    private void lockAdultProfile() {
+        if (!familyEnabled() || activeFamilyProfile != FamilyTimePolicy.Profile.ADULT) return;
+        adultProfileAccessWindow.invalidate();
+        setActiveFamilyProfile(null);
+        maybeShowFamilyProfileSelector();
     }
 
     private LinearLayout familyPanel() {
