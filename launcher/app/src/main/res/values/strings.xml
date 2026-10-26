@@ -139,7 +139,19 @@
     <string name="move_app_position">Position %1$d of %2$d</string>
     <string name="family_profiles" tools:ignore="MissingTranslation">Family profiles</string>
     <string name="family_management" tools:ignore="MissingTranslation">Family management</string>
-    <string name="family_management_help" tools:ignore="MissingTranslation">Turn profiles on or off, grant Usage Access, view today’s use and choose the Xbox HDMI input.</string>
+    <string name="family_management_brand" tools:ignore="MissingTranslation">CLEANYOURTV · FAMILY EDITION</string>
+    <string name="family_management_help" tools:ignore="MissingTranslation">Profiles, limits and permissions on this TV.</string>
+    <string name="family_management_today" tools:ignore="MissingTranslation">Today</string>
+    <string name="family_management_time_summary" tools:ignore="MissingTranslation">%1$d/%2$d min used · %3$d min left</string>
+    <string name="family_management_protection_status" tools:ignore="MissingTranslation">Protection</string>
+    <string name="family_management_profiles_section" tools:ignore="MissingTranslation">Profiles and access</string>
+    <string name="family_management_xbox_section" tools:ignore="MissingTranslation">Xbox and TV</string>
+    <string name="family_management_tools_section" tools:ignore="MissingTranslation">Family tools</string>
+    <string name="family_management_sequence_ready" tools:ignore="MissingTranslation">Adult unlock sequence configured</string>
+    <string name="family_management_usage_ready" tools:ignore="MissingTranslation">Android Usage Access is enabled</string>
+    <string name="family_management_usage_missing" tools:ignore="MissingTranslation">Android Usage Access needs setup</string>
+    <string name="family_management_allowed_apps_count" tools:ignore="MissingTranslation">Approved apps: %1$d</string>
+    <string name="family_management_back_hint" tools:ignore="MissingTranslation">Press Back to close</string>
     <string name="family_child_apps_action" tools:ignore="MissingTranslation">Applications for Child</string>
     <string name="family_child_apps_title" tools:ignore="MissingTranslation">Applications for Child</string>
     <string name="family_child_apps_help" tools:ignore="MissingTranslation">Choose which TV apps appear in the Child profile. New apps stay hidden until an adult approves them. Press OK on an app to change its visibility.</string>
@@ -187,7 +199,7 @@
     <string name="family_xbox_input_none" tools:ignore="MissingTranslation">No available HDMI inputs were found.</string>
     <string name="family_xbox_input_saved" tools:ignore="MissingTranslation">Xbox HDMI input saved.</string>
     <string name="family_xbox_input_required" tools:ignore="MissingTranslation">Choose an HDMI input in Family management first.</string>
-    <string name="family_limitations" tools:ignore="MissingTranslation">With Usage Access, a temporary foreground monitor can return to Home when a limit is reached. Android settings, another launcher or the TV remote can still bypass it. Xbox HDMI time is launcher-led; the system does not let this app switch off or lock the physical input.</string>
+    <string name="family_limitations" tools:ignore="MissingTranslation">App limits apply to launches from this launcher. Android settings and other system routes can bypass them. Xbox HDMI time is tracked by the launcher; Android cannot lock or turn off the input.</string>
     <string name="family_outside_hours" tools:ignore="MissingTranslation">This profile is available from 07:00 to 22:00.</string>
     <string name="family_daily_limit" tools:ignore="MissingTranslation">Today’s time limit has been reached.</string>
     <string name="family_target_blocked" tools:ignore="MissingTranslation">This action is not available in the selected family profile.</string>
@@ -210,7 +222,7 @@
     <string name="family_monitor_notification_text" tools:ignore="MissingTranslation">Monitoring the %1$s profile until Home returns.</string>
     <string name="family_monitor_channel" tools:ignore="MissingTranslation">Family session</string>
     <string name="family_time_bar_section" tools:ignore="MissingTranslation">Time bar</string>
-    <string name="family_time_bar_help" tools:ignore="MissingTranslation">The bar is a visual aid only. Android requires separate permission to draw over apps. Hiding it never pauses the timer or changes the limits.</string>
+    <string name="family_time_bar_help" tools:ignore="MissingTranslation">The bar is informational only. Android requires separate overlay access. Hiding it does not pause time or change limits.</string>
     <string name="family_time_bar_permission_granted" tools:ignore="MissingTranslation">Overlay permission is enabled. The bar can appear over app windows.</string>
     <string name="family_time_bar_permission_missing" tools:ignore="MissingTranslation">Overlay permission is off. Time is still counted and enforced; the bar will stay hidden.</string>
     <string name="family_time_bar_open_settings" tools:ignore="MissingTranslation">Open Android overlay settings</string>
