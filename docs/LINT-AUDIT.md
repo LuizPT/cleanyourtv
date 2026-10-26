@@ -1,39 +1,37 @@
 # Auditoria Android Lint — Edição Família
 
-**Data:** 2026-10-25
+**Data:** 2026-10-26
 **Ramo auditado:** `feature/family-profiles`
-**Referência inicial:** `c752486`
+**Referência atual:** `d833e0e` (Edição Família v16)
 **Alvo:** Xiaomi Mi TV 4S, Android TV 9 (API 28), interface PT-PT
 
 ## Resultado da execução
 
-Executado com JDK 17, SDK 34 e Gradle Wrapper 8.9. A auditoria original em `c752486` encontrou 90 erros e 67 avisos. Após adicionar as regras de backup documentadas abaixo, a verificação atual encontrou **90 erros e 66 avisos**:
+Executado com JDK 17, SDK 34 e Gradle Wrapper 8.9. A auditoria anterior em `c752486` encontrou 90 erros e 67 avisos. A verificação desta revisão v16 encontrou **90 erros e 68 avisos**:
 
 ```text
 .\gradlew.bat --no-daemon :app:lintRelease
-Lint 8.5.2: 90 errors, 66 warnings
+Lint 8.5.2: 90 errors, 68 warnings
 Resultado: falhou por causa dos 90 erros MissingTranslation
 ```
 
 O primeiro erro é `date_format` em `values/strings.xml:21`, sem tradução catalã. Não foram reportados outros erros no ramo Família. O aviso do SDK sobre um ficheiro XML de ferramentas versão 4, lido por uma ferramenta que conhece até à versão 3, apareceu durante a execução, mas não é uma categoria Android Lint e não está incluído nos totais.
 
-Os relatórios foram conservados no diretório de build:
+Os relatórios HTML, XML e texto desta execução foram conservados junto dos artefactos locais da v16:
 
-- HTML: `launcher/app/build/reports/lint-results-release.html`
-- XML: `launcher/app/build/reports/lint-results-release.xml`
-- Texto: `launcher/app/build/intermediates/lint_intermediate_text_report/release/lintReportRelease/lint-results-release.txt`
+- Pasta local: `CleanYourTV-family-recovery-v16-v17-2026-10-26/lint/v16/`
 
 ### Comparação com `custom-2.4`
 
 Foi executado o mesmo `:app:lintRelease` na worktree estável, sem alterar o código:
 
-| Medida | `custom-2.4` | Família inicial | Família atual | Diferença atual vs. estável |
-|---|---:|---:|---:|---:|
-| Erros | 92 | 90 | 90 | −2 |
-| Avisos | 44 | 67 | 66 | +22 |
-| `MissingTranslation` | 90 | 90 | 90 | iguais |
+| Medida | `custom-2.4` | Família v16 | Diferença v16 vs. estável |
+|---|---:|---:|---:|
+| Erros | 92 | 90 | −2 |
+| Avisos | 44 | 68 | +24 |
+| `MissingTranslation` | 90 | 90 | mesmas 90 ocorrências |
 
-Os 90 erros têm o mesmo conjunto de recursos em ambas as versões. A versão Família deixou de apresentar os erros herdados `CoarseFineLocation` e `ByteOrderMark` e o aviso `UnusedTranslation`. Face ao Lint inicial da Família, `DataExtractionRules` também foi resolvido. Os outros deltas são +20 `UnusedResources`, +2 `PluralsCandidate` e +2 recomendações de dependências de teste, compensados por `UnusedTranslation` e `DataExtractionRules` resolvidos: +22 avisos líquidos relativamente à versão estável.
+Os 90 erros `MissingTranslation` são exatamente os mesmos na v16 e em `custom-2.4`; não foram introduzidos novos erros de Lint. A v16 não apresenta os dois erros herdados `CoarseFineLocation` e `ByteOrderMark`, nem o aviso herdado `UnusedTranslation`. Também não apresenta `DataExtractionRules`. Face à versão estável, há +22 `UnusedResources` (32 contra 10), +2 `PluralsCandidate` e +2 recomendações `GradleDependency`, compensados pelos avisos `DataExtractionRules` e `UnusedTranslation` ausentes: +24 avisos líquidos.
 
 ## Tabela completa por categoria
 
@@ -51,25 +49,25 @@ Os 90 erros têm o mesmo conjunto de recursos em ambas as versões. A versão Fa
 | `NotifyDataSetChanged` | Aviso / **Importante** | 3 | `src/main/java/com/gathin/tvhome/AppAdapter.java:175,282,293` | Três atualizações notificam a lista inteira. Em listas maiores pode haver trabalho de layout desnecessário ou maior custo de atualização; não existe evidência de atraso ou perda de foco na TV atual. | **P2 se houver jank; caso contrário P3.** Preferir notificações por intervalo/item ou `DiffUtil`, preservando seleção e foco D-pad; medir antes de refatorar. |
 | `OldTargetApi` | Aviso / Baixo | 1 | `app/build.gradle:12`, `targetSdk 34` | O Lint instalado recomenda um target mais recente. Na Xiaomi API 28, esse aviso não ativa comportamento de Android mais recente; as mudanças dependentes do target só importam ao executar em versões Android novas. | **P3.** Manter 34 para esta edição e atualizar o target apenas com validação nos Android TV suportados, sobretudo serviço foreground e permissões especiais. |
 | `Overdraw` | Aviso / Baixo | 2 | `src/main/res/layout/activity_main.xml:6`, `dream_clock.xml:6` | O layout pinta preto enquanto o tema já pinta fundo. É um desenho redundante, com custo gráfico pequeno numa interface estática. | **P3.** Remover um dos fundos apenas se uma inspeção visual confirmar que não muda o ecrã. |
-| `PluralsCandidate` | Aviso / Baixo | 3 | `src/main/res/values/strings.xml:78,93,98`; `pin_locked`, `sequence_progress_accessibility`, `sequence_locked` | Um dos avisos é a mensagem de progresso acessível “1 de 10 movimentos”, onde “movimentos” continua corretamente no plural. As mensagens em inglês com “%d seconds” podem dizer “1 seconds”; PT-PT usa a forma compacta “%1$d s”. | **P3.** Usar `<plurals>` para a duração em segundos se a apresentação inglesa precisar de gramática singular/plural; manter a mensagem de progresso como está. |
+| `PluralsCandidate` | Aviso / Baixo | 3 | `src/main/res/values/strings.xml:78,94,100`; `pin_locked`, `sequence_progress_accessibility`, `sequence_locked` | Um dos avisos é a mensagem de progresso acessível “1 de 10 movimentos”, onde “movimentos” continua corretamente no plural. As mensagens em inglês com “%d seconds” podem dizer “1 seconds”; PT-PT usa a forma compacta “%1$d s”. | **P3.** Usar `<plurals>` para a duração em segundos se a apresentação inglesa precisar de gramática singular/plural; manter a mensagem de progresso como está. |
 | `RtlEnabled` | Aviso / **Importante para RTL** | 1 | `src/main/AndroidManifest.xml`, atributo `android:supportsRtl` ausente | O projeto contém recursos árabes e atributos RTL, mas não habilita explicitamente a direção RTL. Não afeta português de Portugal, que é LTR. | **P2 para idiomas RTL.** Definir `supportsRtl` e validar todos os ecrãs numa configuração RTL antes de declarar esse suporte completo. |
 | `RtlHardcoded` | Aviso / **Importante para RTL** | 3 | `src/main/res/layout/activity_main.xml:56,124,139`, `gravity="left"` | Estes textos ficam alinhados à esquerda mesmo em RTL. Comentários no layout indicam que a decisão foi deliberada porque o launcher não ativa RTL; a limitação é coerente com o aviso `RtlEnabled`. | **P2 para idiomas RTL; Baixo no alvo PT-PT.** Ao habilitar RTL, trocar por `start`/`end` e rever o alinhamento em árabe. |
 | `SmallSp` | Aviso / **Importante** | 1 | `src/main/res/layout/item_card_row.xml:76`, `@id/digest`, `10sp` | Texto secundário pequeno, potencialmente difícil de ler à distância numa TV. Não afeta a navegação por setas/OK, mas reduz legibilidade. | **P2.** Confirmar a distância de visualização na TV e aumentar para pelo menos 11–12sp se continuar legível no cartão. |
 | `UnusedAttribute` | Aviso / Baixo | 15 | `AndroidManifest.xml:43` (`localeConfig`); 14 `fontVariationSettings` em `activity_main.xml`, `dialog_card_prompt.xml`, `dream_clock.xml`, `item_app.xml`, `item_card_row.xml`, `item_input.xml`, `popup_cards.xml` | `localeConfig` só é usado a partir da API 33 e é ignorado na TV API 28. `fontVariationSettings` só é ignorado nas APIs 26–27; **a API 28 da Xiaomi suporta-o**. O Lint compara com `minSdk 26`, não com este aparelho. | **P3, manter.** Não remover `fontVariationSettings` por causa deste aviso; conservar `localeConfig` para Android mais recente. |
-| `UnusedResources` | Aviso / Baixo | 30 | `src/main/res/values/strings.xml`; lista completa abaixo | São strings sem referência estática. 10 já eram avisos no `custom-2.4`; 20 passaram a não ter referência após substituição de interfaces/textos na Edição Família. O release tem `shrinkResources true`, por isso espera-se que os recursos não usados sejam removidos do APK. | **P3.** Confirmar que não há lookup dinâmico antes de remover qualquer string. Não remover traduções nem textos ainda necessários a um fluxo de migração. |
+| `UnusedResources` | Aviso / Baixo | 32 | `src/main/res/drawable/family_profile_tile_bg.xml`, `ic_family_adult.xml` e `src/main/res/values/strings.xml`; lista completa abaixo | Há dois drawables e 30 strings sem referência estática. 10 strings já eram avisos no `custom-2.4`; 20 strings e os dois drawables são adicionais na Edição Família. O release tem `shrinkResources true`, pelo que estes recursos não usados devem ser removidos do APK. | **P3.** Confirmar que não há lookup dinâmico antes de remover qualquer recurso. Não remover textos necessários aos fluxos de migração. |
 | `VectorPath` | Aviso / Baixo | 1 | `src/main/res/drawable/ic_settings.xml:6`, caminho vetorial de 904 caracteres | Pode aumentar ligeiramente o custo de inflação do ícone de definições; não afeta a autorização parental nem o uso diário de forma observada. | **P3.** Aceitar ou simplificar após comparar visualmente em TV; rasterizar só se a qualidade e densidade continuarem adequadas. |
 
 ### Recursos assinalados como não usados
 
-`standby`, `cant_open`, `launcher_tools`, `order_apps`, `app_library`, `add_to_dock`, `remove_from_dock`, `on_home_dock`, `dock_full`, `pin_setup_title`, `pin_confirm_title`, `pin_change`, `pin_entry_help`, `pin_mismatch`, `pin_saved`, `pin_not_saved`, `pin_locked`, `pin_unlock_app`, `pin_manage_app`, `parental_select_help`, `pin_setup_required`, `context_protect`, `context_unprotect`, `app_protected`, `app_unprotected`, `family_pin_required`, `family_profile_adult_hint`, `family_profile_option`, `family_adult_auth`, `family_time_added`.
+`family_profile_tile_bg`, `ic_family_adult`, `standby`, `cant_open`, `launcher_tools`, `order_apps`, `app_library`, `add_to_dock`, `remove_from_dock`, `on_home_dock`, `dock_full`, `pin_setup_title`, `pin_confirm_title`, `pin_change`, `pin_entry_help`, `pin_mismatch`, `pin_saved`, `pin_not_saved`, `pin_locked`, `pin_unlock_app`, `pin_manage_app`, `parental_select_help`, `pin_setup_required`, `context_protect`, `context_unprotect`, `app_protected`, `app_unprotected`, `family_pin_required`, `family_profile_adult_hint`, `family_profile_option`, `family_adult_auth`, `family_time_added`.
 
-Os 10 já assinalados no `custom-2.4` são `standby`, `cant_open`, `launcher_tools`, `order_apps`, `app_library`, `add_to_dock`, `remove_from_dock`, `on_home_dock`, `dock_full` e `pin_setup_required`. Os outros 20 são diferenças novas do ramo Família; muitos são rótulos da UI PIN anterior ou estados substituídos pela sequência e pelos ecrãs familiares atuais.
+As 10 strings já assinaladas no `custom-2.4` são `standby`, `cant_open`, `launcher_tools`, `order_apps`, `app_library`, `add_to_dock`, `remove_from_dock`, `on_home_dock`, `dock_full` e `pin_setup_required`. As outras 20 strings e os dois drawables são diferenças novas do ramo Família; muitas strings são rótulos da UI PIN anterior ou estados substituídos pela sequência e pelos ecrãs familiares atuais.
 
 ## PT-PT e integridade dos recursos
 
 Foi feita uma validação estrutural dos dois XML, incluindo chaves e placeholders:
 
-- `values/strings.xml`: 265 recursos; `values-pt-rPT/strings.xml`: 265.
+- `values/strings.xml`: 289 recursos; `values-pt-rPT/strings.xml`: 289.
 - Chaves em falta ou excedentárias em PT-PT: **0**; nomes duplicados: **0**.
 - Argumentos formatados diferentes nas chaves comuns (`%1$d`, `%1$s`, etc.): **0**.
 - XML PT-PT válido; as novas strings de sequência e da Edição Família estão traduzidas.
