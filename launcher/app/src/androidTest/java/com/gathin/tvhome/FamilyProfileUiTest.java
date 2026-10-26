@@ -69,6 +69,9 @@ public final class FamilyProfileUiTest {
         originalFamily = save(familyFile);
         originalPin = save(pinFile);
         originalOverlayTestFile = save(overlayTestFile);
+        clearForTest(familyFile);
+        clearForTest(pinFile);
+        clearForTest(overlayTestFile);
 
         SecureRandom random = new SecureRandom();
         testPin = new char[6];
@@ -88,7 +91,12 @@ public final class FamilyProfileUiTest {
         InstrumentationRegistry.getInstrumentation().waitForIdleSync();
 
         String selector = awaitVisibleText(getString(R.string.family_select_profile));
+        assertFalse("The profile selector should not show the removed instruction",
+                selector.contains("Choose a profile to continue.")
+                        || selector.contains("Escolha um perfil para continuar."));
         assertTrue(selector.contains(getString(R.string.family_profile_adult)));
+        assertTrue("Adult profile should communicate that access is locked",
+                selector.contains(getString(R.string.family_profile_adult_sequence_hint)));
         assertTrue(selector.contains(getString(R.string.family_profile_child_short)));
         assertTrue(selector.contains(getString(R.string.family_profile_xbox_short)));
         assertProfileCard(R.id.familyProfileAdult);
@@ -384,6 +392,13 @@ public final class FamilyProfileUiTest {
         InstrumentationRegistry.getInstrumentation().waitForIdleSync();
         assertEquals(FamilyTimePolicy.Profile.ADULT,
                 field(activity, "activeFamilyProfile", FamilyTimePolicy.Profile.class));
+        AccessibilityNodeInfo adultStatus = awaitViewById(R.id.familyStatus);
+        assertNotNull("Adult status should be visible after successful authentication", adultStatus);
+        assertEquals("Adult status should not prepend the remaining-time wording",
+                activity.getString(R.string.family_status_adult,
+                        activity.getString(R.string.family_profile_adult),
+                        activity.getString(R.string.family_unlimited)), String.valueOf(adultStatus.getText()));
+        adultStatus.recycle();
 
         // Leaving the profile does not renew or discard the successful authentication window.
         InstrumentationRegistry.getInstrumentation().runOnMainSync(() -> invokePrivate(
@@ -970,6 +985,12 @@ public final class FamilyProfileUiTest {
             }
         }
         return new SavedFile(true, bytes);
+    }
+
+    private static void clearForTest(File file) throws IOException {
+        if (file.exists() && !file.delete()) {
+            throw new IOException("Could not isolate test file state");
+        }
     }
 
     private static void restore(File file, SavedFile saved) throws IOException {

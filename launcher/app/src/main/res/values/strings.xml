@@ -178,14 +178,13 @@
     <string name="family_pin_required" tools:ignore="MissingTranslation">Set a parental PIN before enabling Family Edition.</string>
     <string name="family_sequence_required" tools:ignore="MissingTranslation">Set an unlock sequence before using Family Edition.</string>
     <string name="family_select_profile" tools:ignore="MissingTranslation">Who’s watching?</string>
-    <string name="family_select_profile_help" tools:ignore="MissingTranslation">Choose a profile to continue.</string>
     <string name="family_profile_adult" tools:ignore="MissingTranslation">Adult</string>
     <string name="family_profile_child" tools:ignore="MissingTranslation">Child (TV)</string>
     <string name="family_profile_xbox" tools:ignore="MissingTranslation">Xbox (HDMI)</string>
     <string name="family_profile_child_short" tools:ignore="MissingTranslation">Child</string>
     <string name="family_profile_xbox_short" tools:ignore="MissingTranslation">Xbox</string>
-    <string name="family_profile_adult_hint" tools:ignore="MissingTranslation">Full access · parental PIN</string>
-    <string name="family_profile_adult_sequence_hint" tools:ignore="MissingTranslation">Full access · unlock sequence</string>
+    <string name="family_profile_adult_hint" tools:ignore="MissingTranslation">Access locked</string>
+    <string name="family_profile_adult_sequence_hint" tools:ignore="MissingTranslation">Access locked</string>
     <string name="family_profile_remaining" tools:ignore="MissingTranslation">%1$s remaining today</string>
     <string name="family_profile_usage_required" tools:ignore="MissingTranslation">Enable Usage Access</string>
     <string name="family_profile_session_pending" tools:ignore="MissingTranslation">Adult review required</string>
@@ -200,6 +199,7 @@
     <string name="family_sequence_adult_auth" tools:ignore="MissingTranslation">Enter your unlock sequence for the Adult profile.</string>
     <string name="family_lock_profile" tools:ignore="MissingTranslation">Lock profile</string>
     <string name="family_status" tools:ignore="MissingTranslation">%1$s · %2$s remaining</string>
+    <string name="family_status_adult" tools:ignore="MissingTranslation">%1$s · %2$s</string>
     <string name="family_unlimited" tools:ignore="MissingTranslation">No time limit</string>
     <string name="family_time_label" tools:ignore="MissingTranslation">%1$s used today · %2$s remaining</string>
     <string name="family_time_hours" tools:ignore="MissingTranslation">Allowed from 07:00 to 22:00</string>

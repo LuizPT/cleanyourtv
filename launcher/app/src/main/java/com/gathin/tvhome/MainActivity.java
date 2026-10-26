@@ -2349,7 +2349,9 @@ public class MainActivity extends Activity implements AppAdapter.TileListener {
             long ms = snapshot.remainingMs(xbox ? FamilyProfileStore.Profile.XBOX : FamilyProfileStore.Profile.CHILD_TV, today);
             remaining = android.text.format.DateUtils.formatElapsedTime((ms + 999L) / 1000L);
         }
-        familyStatus.setText(getString(R.string.family_status, profileName, remaining));
+        int statusResource = activeFamilyProfile == FamilyTimePolicy.Profile.ADULT
+                ? R.string.family_status_adult : R.string.family_status;
+        familyStatus.setText(getString(statusResource, profileName, remaining));
         familyStatus.setVisibility(View.VISIBLE);
     }
 
@@ -2447,14 +2449,6 @@ public class MainActivity extends Activity implements AppAdapter.TileListener {
         title.setId(R.id.familyProfileTitle);
         title.setGravity(Gravity.CENTER);
         panel.addView(title, new LinearLayout.LayoutParams(-2, -2));
-        if (!compactProfileLayout) {
-            TextView help = familyText(R.string.family_select_profile_help, 14, 0xFFC5CBD4);
-            help.setGravity(Gravity.CENTER);
-            LinearLayout.LayoutParams helpLp = new LinearLayout.LayoutParams(-1, -2);
-            helpLp.topMargin = dp(6);
-            panel.addView(help, helpLp);
-        }
-
         if (snapshot.clockUncertain) {
             TextView warning = familyText(R.string.family_clock_uncertain, 13, 0xFFFFD180);
             warning.setGravity(Gravity.CENTER);
