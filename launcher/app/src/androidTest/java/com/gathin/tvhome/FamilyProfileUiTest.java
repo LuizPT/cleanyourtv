@@ -397,7 +397,13 @@ public final class FamilyProfileUiTest {
         assertEquals(FamilyTimePolicy.Profile.ADULT,
                 field(activity, "activeFamilyProfile", FamilyTimePolicy.Profile.class));
 
-        clickView(R.id.btnFamilyLock);
+        InstrumentationRegistry.getInstrumentation().runOnMainSync(() ->
+                activity.findViewById(R.id.btnSettings).requestFocus());
+        InstrumentationRegistry.getInstrumentation().sendKeyDownUpSync(KeyEvent.KEYCODE_DPAD_RIGHT);
+        AccessibilityNodeInfo lockFocus = awaitFocusedViewById(R.id.btnFamilyLock);
+        assertNotNull("D-pad right should reach the Adult lock action", lockFocus);
+        lockFocus.recycle();
+        InstrumentationRegistry.getInstrumentation().sendKeyDownUpSync(KeyEvent.KEYCODE_DPAD_CENTER);
         awaitVisibleText(getString(R.string.family_select_profile));
         assertEquals("Manual lock must end the Adult session", null,
                 field(activity, "activeFamilyProfile", FamilyTimePolicy.Profile.class));

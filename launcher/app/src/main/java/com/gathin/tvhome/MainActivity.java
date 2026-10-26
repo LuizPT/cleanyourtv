@@ -390,14 +390,20 @@ public class MainActivity extends Activity implements AppAdapter.TileListener {
                 focusTile(lastFocused % COLUMNS);
                 return true;
             }
+            boolean rtl = v.getLayoutDirection() == View.LAYOUT_DIRECTION_RTL;
+            boolean hasFamilyLock = btnFamilyLock.getVisibility() == View.VISIBLE;
             if (keyCode == KeyEvent.KEYCODE_DPAD_LEFT) {
-                // The left end is Inputs, or Wi-Fi on a box without inputs.
+                // Keep the visual ends of the row closed in both LTR and RTL layouts.
+                if (rtl) return v.getId() == (hasFamilyLock ? R.id.btnFamilyLock : R.id.btnSettings);
                 return v.getId() == R.id.btnInputs
                         || (v.getId() == R.id.btnWifi && btnInputs.getVisibility() != View.VISIBLE);
             }
-            return keyCode == KeyEvent.KEYCODE_DPAD_RIGHT
-                    && (v.getId() == R.id.btnFamilyLock
-                    || (v.getId() == R.id.btnSettings && btnFamilyLock.getVisibility() != View.VISIBLE));
+            if (keyCode == KeyEvent.KEYCODE_DPAD_RIGHT) {
+                if (rtl) return v.getId() == R.id.btnInputs
+                        || (v.getId() == R.id.btnWifi && btnInputs.getVisibility() != View.VISIBLE);
+                return v.getId() == (hasFamilyLock ? R.id.btnFamilyLock : R.id.btnSettings);
+            }
+            return false;
         };
         btnInputs.setOnKeyListener(pillKeys);
         btnWifi.setOnKeyListener(pillKeys);
