@@ -3191,11 +3191,7 @@ public class MainActivity extends Activity implements AppAdapter.TileListener {
     }
 
     private int familyAllowedChildAppCount() {
-        int count = 0;
-        for (Map.Entry<String, Long> entry : launchableInstallTimes().entrySet()) {
-            if (familyStore.isChildAppAllowed(entry.getKey(), entry.getValue())) count++;
-        }
-        return count;
+        return familyStore.childAllowedApps().size();
     }
 
     private static long familyDisplayMinutes(long milliseconds) {
