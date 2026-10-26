@@ -110,6 +110,7 @@ public class MainActivity extends Activity implements AppAdapter.TileListener {
     private FamilyTimePolicy.Profile activeFamilyProfile;
     private boolean familyActivityResumed;
     private boolean familySelectorShowing;
+    private Dialog familySelectorDialog;
     private boolean familyScreenReceiverRegistered;
     private boolean familyLimitNotified;
     private boolean familyLaunchInFlight;
@@ -1142,6 +1143,48 @@ public class MainActivity extends Activity implements AppAdapter.TileListener {
         });
     }
 
+    /** Keeps the profile chooser underneath authentication and retries incorrect sequences in place. */
+    private void authenticateAdultProfile(Dialog selectorDialog) {
+        if (!parentalStateAvailable()) return;
+        Runnable enterAdult = () -> {
+            long now = SystemClock.elapsedRealtime();
+            if (!adultProfileAccessWindow.permitsReentry(now)) adultProfileAccessWindow.markAuthenticated(now);
+            selectorDialog.dismiss();
+            familySelectorShowing = false;
+            selectFamilyProfile(FamilyTimePolicy.Profile.ADULT);
+        };
+        if (launcherState.isUnlockSequenceConfigured()) {
+            showAdultProfileSequenceEntry(enterAdult);
+            return;
+        }
+        if (launcherState.hasStorageError()) {
+            Toast.makeText(this, R.string.parental_state_unavailable, Toast.LENGTH_SHORT).show();
+            return;
+        }
+        if (launcherState.isPinConfigured()) {
+            showPinEntry(getString(R.string.sequence_migration_title), pin -> {
+                LauncherState.PinResult result = launcherState.verifyPin(pin, System.currentTimeMillis());
+                Arrays.fill(pin, '\0');
+                if (result == LauncherState.PinResult.MATCH) {
+                    setupUnlockSequence(() -> {
+                        Toast.makeText(this, R.string.sequence_saved, Toast.LENGTH_SHORT).show();
+                        enterAdult.run();
+                    });
+                } else {
+                    handleCredentialResult(result, () -> { }, false);
+                }
+            }, () -> { });
+            return;
+        }
+        Toast.makeText(this, R.string.parental_state_unavailable, Toast.LENGTH_SHORT).show();
+    }
+
+    private void showAdultProfileSequenceEntry(Runnable onAuthorized) {
+        showSequenceEntryDialog(getString(R.string.family_sequence_adult_auth),
+                LauncherState.UNLOCK_SEQUENCE_MAX_LEGACY_MOVES, R.string.family_adult_auth_subtitle,
+                null, () -> { }, true, onAuthorized);
+    }
+
     private void handleCredentialResult(LauncherState.PinResult result, Runnable allowed, boolean sequence) {
         if (result == LauncherState.PinResult.MATCH) {
             if (sequence) adultProfileAccessWindow.markAuthenticated(SystemClock.elapsedRealtime());
@@ -1280,33 +1323,60 @@ public class MainActivity extends Activity implements AppAdapter.TileListener {
     /** D-pad sequence input is local to this dialog; the secret is represented only by progress dots. */
     private void showSequenceEntry(String titleText, int maxMoves, int helpText, SequenceSubmit submit,
                                    Runnable onCancel) {
+        showSequenceEntryDialog(titleText, maxMoves, helpText, submit, onCancel, false, null);
+    }
+
+    private void showSequenceEntryDialog(String titleText, int maxMoves, int helpText, SequenceSubmit submit,
+                                        Runnable onCancel, boolean adultProfileAuth, Runnable onAuthorized) {
         Dialog dialog = new Dialog(this);
         dialog.requestWindowFeature(Window.FEATURE_NO_TITLE);
         LinearLayout panel = new LinearLayout(this);
         panel.setOrientation(LinearLayout.VERTICAL);
-        int padding = dp(24);
+        panel.setGravity(adultProfileAuth ? Gravity.CENTER_HORIZONTAL : Gravity.NO_GRAVITY);
+        if (adultProfileAuth) panel.setId(R.id.familyAdultAuthPanel);
+        int padding = dp(adultProfileAuth ? 22 : 24);
         panel.setPadding(padding, padding, padding, padding);
         panel.setBackgroundResource(R.drawable.glass_panel);
 
+        if (adultProfileAuth) {
+            FrameLayout lockFrame = new FrameLayout(this);
+            lockFrame.setBackgroundResource(R.drawable.lock_badge_bg);
+            lockFrame.getBackground().setTint(0xFF17395A);
+            ImageView lock = new ImageView(this);
+            lock.setImageResource(R.drawable.ic_lock);
+            lock.setColorFilter(0xFF8DC5FF);
+            lock.setContentDescription(null);
+            FrameLayout.LayoutParams lockIconLp = new FrameLayout.LayoutParams(dp(20), dp(20), Gravity.CENTER);
+            lockFrame.addView(lock, lockIconLp);
+            LinearLayout.LayoutParams lockFrameLp = new LinearLayout.LayoutParams(dp(42), dp(42));
+            lockFrameLp.gravity = Gravity.CENTER_HORIZONTAL;
+            lockFrameLp.bottomMargin = dp(9);
+            panel.addView(lockFrame, lockFrameLp);
+        }
+
         TextView title = new TextView(this);
+        if (adultProfileAuth) title.setId(R.id.familyAdultAuthTitle);
         title.setText(titleText);
         title.setTextColor(Color.WHITE);
-        title.setTextSize(22);
+        title.setTextSize(adultProfileAuth ? 21 : 22);
+        if (adultProfileAuth) title.setGravity(Gravity.CENTER);
         panel.addView(title, new LinearLayout.LayoutParams(-1, -2));
         TextView help = new TextView(this);
+        if (adultProfileAuth) help.setId(R.id.familyAdultAuthSubtitle);
         help.setText(helpText);
-        help.setTextColor(0xFFB8B8BE);
+        help.setTextColor(adultProfileAuth ? 0xFFB9C7D8 : 0xFFB8B8BE);
         help.setTextSize(14);
+        if (adultProfileAuth) help.setGravity(Gravity.CENTER);
         LinearLayout.LayoutParams helpLp = new LinearLayout.LayoutParams(-1, -2);
-        helpLp.topMargin = dp(4);
+        helpLp.topMargin = dp(adultProfileAuth ? 2 : 4);
         panel.addView(help, helpLp);
 
         TextView progress = new TextView(this);
         progress.setId(R.id.unlock_sequence_progress);
         progress.setGravity(Gravity.CENTER);
         progress.setTextColor(Color.WHITE);
-        progress.setTextSize(19);
-        progress.setPadding(0, dp(16), 0, dp(12));
+        progress.setTextSize(adultProfileAuth ? 23 : 19);
+        progress.setPadding(0, dp(adultProfileAuth ? 14 : 16), 0, dp(adultProfileAuth ? 8 : 12));
         panel.addView(progress, new LinearLayout.LayoutParams(-1, -2));
 
         TextView progressCount = new TextView(this);
@@ -1315,13 +1385,39 @@ public class MainActivity extends Activity implements AppAdapter.TileListener {
         progressCount.setTextColor(0xFFB8B8BE);
         progressCount.setTextSize(14);
         progressCount.setImportantForAccessibility(View.IMPORTANT_FOR_ACCESSIBILITY_NO);
+        if (adultProfileAuth) progressCount.setVisibility(View.GONE);
         panel.addView(progressCount, new LinearLayout.LayoutParams(-1, -2));
+
+        TextView feedback = null;
+        if (adultProfileAuth) {
+            feedback = new TextView(this);
+            feedback.setId(R.id.familyAdultAuthError);
+            feedback.setTextColor(0xFFFFB8B8);
+            feedback.setTextSize(13);
+            feedback.setGravity(Gravity.CENTER);
+            feedback.setAccessibilityLiveRegion(View.ACCESSIBILITY_LIVE_REGION_POLITE);
+            feedback.setVisibility(View.GONE);
+            LinearLayout.LayoutParams feedbackLp = new LinearLayout.LayoutParams(-1, -2);
+            feedbackLp.topMargin = dp(2);
+            panel.addView(feedback, feedbackLp);
+            TextView footer = new TextView(this);
+            footer.setId(R.id.familyAdultAuthHelp);
+            footer.setText(R.string.family_adult_auth_help);
+            footer.setTextColor(0xFF9EADC0);
+            footer.setTextSize(12);
+            footer.setGravity(Gravity.CENTER);
+            LinearLayout.LayoutParams footerLp = new LinearLayout.LayoutParams(-1, -2);
+            footerLp.topMargin = dp(8);
+            panel.addView(footer, footerLp);
+        }
+        final TextView authFeedback = feedback;
 
         char[] entered = new char[maxMoves];
         int[] length = {0};
         boolean[] submitted = {false};
         boolean[] cancelled = {false};
         Runnable redraw = () -> {
+            if (authFeedback != null) authFeedback.setVisibility(View.GONE);
             StringBuilder dots = new StringBuilder(LauncherState.UNLOCK_SEQUENCE_MAX_MOVES * 2);
             for (int i = 0; i < LauncherState.UNLOCK_SEQUENCE_MAX_MOVES; i++) {
                 dots.append(i < length[0] ? "● " : "○ ");
@@ -1336,41 +1432,73 @@ public class MainActivity extends Activity implements AppAdapter.TileListener {
         Runnable appendLeft = () -> appendSequenceMove(entered, length, 'L', redraw);
         Runnable appendRight = () -> appendSequenceMove(entered, length, 'R', redraw);
 
-        LinearLayout pad = new LinearLayout(this);
-        pad.setOrientation(LinearLayout.VERTICAL);
-        pad.setGravity(Gravity.CENTER);
-        TextView up = sequenceArrowKey("↑", R.string.sequence_direction_up, appendUp);
-        LinearLayout top = new LinearLayout(this);
-        top.setGravity(Gravity.CENTER);
-        top.addView(up, sequenceArrowLayout());
-        pad.addView(top, new LinearLayout.LayoutParams(-1, -2));
+        if (!adultProfileAuth) {
+            LinearLayout pad = new LinearLayout(this);
+            pad.setOrientation(LinearLayout.VERTICAL);
+            pad.setGravity(Gravity.CENTER);
+            TextView up = sequenceArrowKey("↑", R.string.sequence_direction_up, appendUp);
+            LinearLayout top = new LinearLayout(this);
+            top.setGravity(Gravity.CENTER);
+            top.addView(up, sequenceArrowLayout());
+            pad.addView(top, new LinearLayout.LayoutParams(-1, -2));
 
-        LinearLayout middle = new LinearLayout(this);
-        middle.setGravity(Gravity.CENTER);
-        middle.addView(sequenceArrowKey("←", R.string.sequence_direction_left, appendLeft), sequenceArrowLayout());
-        View spacer = new View(this);
-        middle.addView(spacer, sequenceArrowLayout());
-        middle.addView(sequenceArrowKey("→", R.string.sequence_direction_right, appendRight), sequenceArrowLayout());
-        pad.addView(middle, new LinearLayout.LayoutParams(-1, -2));
+            LinearLayout middle = new LinearLayout(this);
+            middle.setGravity(Gravity.CENTER);
+            middle.addView(sequenceArrowKey("←", R.string.sequence_direction_left, appendLeft), sequenceArrowLayout());
+            View spacer = new View(this);
+            middle.addView(spacer, sequenceArrowLayout());
+            middle.addView(sequenceArrowKey("→", R.string.sequence_direction_right, appendRight), sequenceArrowLayout());
+            pad.addView(middle, new LinearLayout.LayoutParams(-1, -2));
 
-        LinearLayout bottom = new LinearLayout(this);
-        bottom.setGravity(Gravity.CENTER);
-        bottom.addView(sequenceArrowKey("↓", R.string.sequence_direction_down, appendDown), sequenceArrowLayout());
-        pad.addView(bottom, new LinearLayout.LayoutParams(-1, -2));
-        panel.addView(pad, new LinearLayout.LayoutParams(-1, -2));
+            LinearLayout bottom = new LinearLayout(this);
+            bottom.setGravity(Gravity.CENTER);
+            bottom.addView(sequenceArrowKey("↓", R.string.sequence_direction_down, appendDown), sequenceArrowLayout());
+            pad.addView(bottom, new LinearLayout.LayoutParams(-1, -2));
+            panel.addView(pad, new LinearLayout.LayoutParams(-1, -2));
+        }
         redraw.run();
 
         confirm[0] = () -> {
             if (length[0] < LauncherState.UNLOCK_SEQUENCE_MIN_MOVES) {
-                Toast.makeText(this, R.string.sequence_length_error, Toast.LENGTH_SHORT).show();
+                if (authFeedback != null) {
+                    authFeedback.setText(R.string.sequence_length_error);
+                    authFeedback.setVisibility(View.VISIBLE);
+                    authFeedback.announceForAccessibility(authFeedback.getText());
+                } else {
+                    Toast.makeText(this, R.string.sequence_length_error, Toast.LENGTH_SHORT).show();
+                }
                 return;
             }
-            submitted[0] = true;
             char[] value = Arrays.copyOf(entered, length[0]);
             Arrays.fill(entered, '\0');
             length[0] = 0;
-            dialog.dismiss();
-            submit.onSequence(value);
+            if (adultProfileAuth) {
+                LauncherState.PinResult result = launcherState.verifyUnlockSequence(value, System.currentTimeMillis());
+                Arrays.fill(value, '\0');
+                redraw.run();
+                if (result == LauncherState.PinResult.MATCH) {
+                    submitted[0] = true;
+                    dialog.dismiss();
+                    if (onAuthorized != null) onAuthorized.run();
+                } else if (authFeedback != null) {
+                    if (result == LauncherState.PinResult.LOCKED) {
+                        long ms = launcherState.lockRemainingMs(System.currentTimeMillis());
+                        int seconds = (int) Math.max(1L, (ms + 999L) / 1000L);
+                        authFeedback.setText(getString(R.string.sequence_locked, seconds));
+                    } else if (result == LauncherState.PinResult.ERROR
+                            || result == LauncherState.PinResult.NOT_CONFIGURED) {
+                        authFeedback.setText(R.string.parental_state_unavailable);
+                    } else {
+                        authFeedback.setText(R.string.sequence_incorrect);
+                    }
+                    authFeedback.setVisibility(View.VISIBLE);
+                    authFeedback.announceForAccessibility(authFeedback.getText());
+                }
+            } else {
+                submitted[0] = true;
+                dialog.dismiss();
+                submit.onSequence(value);
+            }
         };
         dialog.setOnKeyListener((d, keyCode, event) -> {
             if (keyCode == KeyEvent.KEYCODE_DPAD_UP || keyCode == KeyEvent.KEYCODE_DPAD_DOWN
@@ -1413,10 +1541,11 @@ public class MainActivity extends Activity implements AppAdapter.TileListener {
         Window window = dialog.getWindow();
         if (window != null) {
             window.setBackgroundDrawable(new ColorDrawable(Color.TRANSPARENT));
-            window.setDimAmount(0.72f);
+            window.setDimAmount(adultProfileAuth ? 0.46f : 0.72f);
+            window.setGravity(Gravity.CENTER);
         }
         dialog.show();
-        if (window != null) window.setLayout(dp(410), ViewGroup.LayoutParams.WRAP_CONTENT);
+        if (window != null) window.setLayout(dp(adultProfileAuth ? 360 : 410), ViewGroup.LayoutParams.WRAP_CONTENT);
         panel.setFocusableInTouchMode(true);
         panel.requestFocus();
     }
@@ -2489,23 +2618,16 @@ public class MainActivity extends Activity implements AppAdapter.TileListener {
         View adult = familyProfileTile(R.id.familyProfileAdult, R.string.family_profile_adult,
                 R.drawable.family_profile_adult, getString(R.string.family_profile_adult_sequence_hint),
                 adultPin, profileCardSizeDp, () -> {
-            dialog.dismiss();
-            familySelectorShowing = false;
             if (!adultPin) {
                 Toast.makeText(this, R.string.family_sequence_required, Toast.LENGTH_LONG).show();
                 return;
             }
             if (adultProfileAccessWindow.permitsReentry(SystemClock.elapsedRealtime())) {
+                dialog.dismiss();
+                familySelectorShowing = false;
                 selectFamilyProfile(FamilyTimePolicy.Profile.ADULT);
             } else {
-                authenticate(getString(R.string.family_sequence_adult_auth), () -> {
-                    long now = SystemClock.elapsedRealtime();
-                    if (!adultProfileAccessWindow.permitsReentry(now)) {
-                        // Covers the one-time legacy-PIN migration path, which creates a sequence inline.
-                        adultProfileAccessWindow.markAuthenticated(now);
-                    }
-                    selectFamilyProfile(FamilyTimePolicy.Profile.ADULT);
-                });
+                authenticateAdultProfile(dialog);
             }
         });
         addFamilyProfileTile(choices, adult);
@@ -2612,6 +2734,11 @@ public class MainActivity extends Activity implements AppAdapter.TileListener {
         dialog.setContentView(selectorRoot);
         configureFamilyDialog(dialog, 0f);
         dialog.setOnCancelListener(d -> familySelectorShowing = false);
+        familySelectorDialog = dialog;
+        dialog.setOnDismissListener(d -> {
+            if (familySelectorDialog == d) familySelectorDialog = null;
+            familySelectorShowing = false;
+        });
         dialog.show();
         Window window = dialog.getWindow();
         if (window != null) window.setLayout(ViewGroup.LayoutParams.MATCH_PARENT,

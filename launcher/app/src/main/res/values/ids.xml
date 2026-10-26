@@ -16,4 +16,9 @@
     <item name="familyManagementDetailBack" type="id" />
     <item name="unlock_sequence_progress" type="id" />
     <item name="unlock_sequence_count" type="id" />
+    <item name="familyAdultAuthPanel" type="id" />
+    <item name="familyAdultAuthTitle" type="id" />
+    <item name="familyAdultAuthSubtitle" type="id" />
+    <item name="familyAdultAuthHelp" type="id" />
+    <item name="familyAdultAuthError" type="id" />
 </resources>

@@ -7,6 +7,7 @@ import static org.junit.Assert.assertNull;
 import static org.junit.Assert.assertTrue;
 
 import android.app.Activity;
+import android.app.Dialog;
 import android.app.UiAutomation;
 import android.content.BroadcastReceiver;
 import android.content.Context;
@@ -262,7 +263,7 @@ public final class FamilyProfileUiTest {
         awaitVisibleText(getString(R.string.family_select_profile));
 
         clickView(R.id.familyProfileAdult);
-        awaitVisibleText(getString(R.string.sequence_auth_entry_help));
+        awaitVisibleText(getString(R.string.family_adult_auth_subtitle));
         int[] adultSequence = {KeyEvent.KEYCODE_DPAD_UP, KeyEvent.KEYCODE_DPAD_DOWN,
                 KeyEvent.KEYCODE_DPAD_LEFT, KeyEvent.KEYCODE_DPAD_RIGHT,
                 KeyEvent.KEYCODE_DPAD_UP, KeyEvent.KEYCODE_DPAD_DOWN,
@@ -340,17 +341,18 @@ public final class FamilyProfileUiTest {
             adult.recycle();
         }
 
-        awaitVisibleText(getString(R.string.sequence_auth_entry_help));
+        awaitVisibleText(getString(R.string.family_adult_auth_subtitle));
+        assertAdultAuthModalKeepsSelector();
         AccessibilityNodeInfo progress = awaitViewById(R.id.unlock_sequence_progress);
         assertNotNull("Sequence progress dots are missing", progress);
         String emptyProgress = String.valueOf(progress.getText());
         assertTrue("Progress should contain only neutral dot indicators", emptyProgress.matches("[●○ ]+"));
         assertEquals("Only ten move indicators should be shown", 10,
                 emptyProgress.chars().filter(value -> value == '○').count());
+        String progressDescription = String.valueOf(progress.getContentDescription());
+        assertTrue("Accessibility should report the full legacy sequence capacity",
+                progressDescription.contains("0") && progressDescription.contains("16"));
         progress.recycle();
-        AccessibilityNodeInfo count = awaitViewById(R.id.unlock_sequence_count);
-        assertEquals("0 / 16", String.valueOf(count.getText()));
-        count.recycle();
 
         int[] moves = {KeyEvent.KEYCODE_DPAD_UP, KeyEvent.KEYCODE_DPAD_DOWN,
                 KeyEvent.KEYCODE_DPAD_LEFT, KeyEvent.KEYCODE_DPAD_RIGHT,
@@ -371,22 +373,34 @@ public final class FamilyProfileUiTest {
         assertNull("Correct sequence should authorize the Adult profile", awaitViewById(R.id.unlock_sequence_progress));
     }
 
+    @Test public void adultAuthBackWithEmptySequenceCancelsOnlyTheModal() throws Exception {
+        launchMainActivity();
+        awaitVisibleText(getString(R.string.family_select_profile));
+        clickView(R.id.familyProfileAdult);
+        awaitVisibleText(getString(R.string.family_adult_auth_subtitle));
+        assertAdultAuthModalKeepsSelector();
+
+        InstrumentationRegistry.getInstrumentation().sendKeyDownUpSync(KeyEvent.KEYCODE_BACK);
+        InstrumentationRegistry.getInstrumentation().waitForIdleSync();
+        assertNull("Back on an empty sequence should close its modal", awaitViewById(R.id.unlock_sequence_progress));
+        assertProfileSelectorDialogShowing();
+        assertNull("Cancelling authentication must not enter Adult",
+                field(activity, "activeFamilyProfile", FamilyTimePolicy.Profile.class));
+    }
+
     @Test public void adultReentryUsesTheWindowAndManualLockBackRequiresFreshSequence() throws Exception {
         launchMainActivity();
         awaitVisibleText(getString(R.string.family_select_profile));
         clickView(R.id.familyProfileAdult);
-        awaitVisibleText(getString(R.string.sequence_auth_entry_help));
+        awaitVisibleText(getString(R.string.family_adult_auth_subtitle));
 
         enterSequence("UDLRUDLRUU");
         InstrumentationRegistry.getInstrumentation().sendKeyDownUpSync(KeyEvent.KEYCODE_DPAD_CENTER);
         InstrumentationRegistry.getInstrumentation().waitForIdleSync();
         assertEquals("A wrong sequence must not enter Adult",
                 null, field(activity, "activeFamilyProfile", FamilyTimePolicy.Profile.class));
-
-        showProfileSelectorAgain();
-        awaitVisibleText(getString(R.string.family_select_profile));
-        clickView(R.id.familyProfileAdult);
-        awaitVisibleText(getString(R.string.sequence_auth_entry_help));
+        awaitVisibleText(getString(R.string.sequence_incorrect));
+        assertAdultAuthModalKeepsSelector();
         enterSequence("UDLRUDLRUD");
         InstrumentationRegistry.getInstrumentation().sendKeyDownUpSync(KeyEvent.KEYCODE_DPAD_CENTER);
         InstrumentationRegistry.getInstrumentation().waitForIdleSync();
@@ -430,7 +444,7 @@ public final class FamilyProfileUiTest {
         showProfileSelectorAgain();
         awaitVisibleText(getString(R.string.family_select_profile));
         clickView(R.id.familyProfileAdult);
-        awaitVisibleText(getString(R.string.sequence_auth_entry_help));
+        awaitVisibleText(getString(R.string.family_adult_auth_subtitle));
         assertNotNull("Manual lock must require the sequence again",
                 awaitViewById(R.id.unlock_sequence_progress));
     }
@@ -439,7 +453,7 @@ public final class FamilyProfileUiTest {
         launchMainActivity();
         awaitVisibleText(getString(R.string.family_select_profile));
         clickView(R.id.familyProfileAdult);
-        awaitVisibleText(getString(R.string.sequence_auth_entry_help));
+        awaitVisibleText(getString(R.string.family_adult_auth_subtitle));
         enterSequence("UDLRUDLRUD");
         InstrumentationRegistry.getInstrumentation().sendKeyDownUpSync(KeyEvent.KEYCODE_DPAD_CENTER);
         InstrumentationRegistry.getInstrumentation().waitForIdleSync();
@@ -456,7 +470,7 @@ public final class FamilyProfileUiTest {
         launchMainActivity();
         awaitVisibleText(getString(R.string.family_select_profile));
         clickView(R.id.familyProfileAdult);
-        awaitVisibleText(getString(R.string.sequence_auth_entry_help));
+        awaitVisibleText(getString(R.string.family_adult_auth_subtitle));
         assertNotNull("A new Activity instance must require fresh authentication",
                 awaitViewById(R.id.unlock_sequence_progress));
     }
@@ -465,7 +479,7 @@ public final class FamilyProfileUiTest {
         launchMainActivity();
         awaitVisibleText(getString(R.string.family_select_profile));
         clickView(R.id.familyProfileAdult);
-        awaitVisibleText(getString(R.string.sequence_auth_entry_help));
+        awaitVisibleText(getString(R.string.family_adult_auth_subtitle));
         enterSequence("UDLRUDLRUD");
         InstrumentationRegistry.getInstrumentation().sendKeyDownUpSync(KeyEvent.KEYCODE_DPAD_CENTER);
         InstrumentationRegistry.getInstrumentation().waitForIdleSync();
@@ -481,9 +495,29 @@ public final class FamilyProfileUiTest {
                 field(activity, "activeFamilyProfile", FamilyTimePolicy.Profile.class));
 
         clickView(R.id.familyProfileAdult);
-        awaitVisibleText(getString(R.string.sequence_auth_entry_help));
+        awaitVisibleText(getString(R.string.family_adult_auth_subtitle));
         assertNotNull("Screen-off must require the sequence on the next Adult entry",
                 awaitViewById(R.id.unlock_sequence_progress));
+    }
+
+    private void assertAdultAuthModalKeepsSelector() throws Exception {
+        assertViewExists(R.id.familyAdultAuthPanel, "Adult sequence panel is missing");
+        assertViewExists(R.id.familyAdultAuthTitle, "Adult authentication title is missing");
+        assertViewExists(R.id.familyAdultAuthSubtitle, "Adult authentication subtitle is missing");
+        assertViewExists(R.id.familyAdultAuthHelp, "D-pad helper text is missing");
+        assertProfileSelectorDialogShowing();
+    }
+
+    private void assertProfileSelectorDialogShowing() throws Exception {
+        Dialog selector = field(activity, "familySelectorDialog", Dialog.class);
+        assertNotNull("Profile selector dialog should remain underneath Adult authentication", selector);
+        assertTrue("Profile selector should remain visible while the modal is open", selector.isShowing());
+        assertNotNull("The unchanged profile selector title should remain behind the modal",
+                selector.findViewById(R.id.familyProfileTitle));
+        assertNotNull("The Adult card should remain in its original selector", selector.findViewById(R.id.familyProfileAdult));
+        assertNotNull("The digital clock should remain in its original selector", selector.findViewById(R.id.familyProfileClockTime));
+        assertTrue("Selector state must remain active beneath authentication",
+                Boolean.TRUE.equals(field(activity, "familySelectorShowing", Boolean.class)));
     }
 
     private void showProfileSelectorAgain() {
@@ -543,7 +577,7 @@ public final class FamilyProfileUiTest {
         launchMainActivity();
         awaitVisibleText(getString(R.string.family_select_profile));
         clickView(R.id.familyProfileAdult);
-        awaitVisibleText(getString(R.string.sequence_auth_entry_help));
+        awaitVisibleText(getString(R.string.family_adult_auth_subtitle));
         assertFalse("The active sequence prompt must not show the legacy numeric keypad",
                 hasExactText("0"));
     }
