@@ -11,8 +11,8 @@ android {
         minSdk 26
         targetSdk 34
         // Recovery update must install over newer family builds without removing app data.
-        versionCode 17
-        versionName '2.4-recovery-v17'
+        versionCode 19
+        versionName '2.4-recovery-v19'
     }
 
     buildTypes {
