@@ -200,6 +200,10 @@
     <string name="family_adult_auth_subtitle" tools:ignore="MissingTranslation">Enter your sequence</string>
     <string name="family_adult_auth_help" tools:ignore="MissingTranslation">OK confirms · Back deletes</string>
     <string name="family_lock_profile" tools:ignore="MissingTranslation">Lock profile</string>
+    <string name="family_exit_profile" tools:ignore="MissingTranslation">Exit profile</string>
+    <string name="family_refresh_profiles" tools:ignore="MissingTranslation">Refresh</string>
+    <string name="family_updated" tools:ignore="MissingTranslation">Updated</string>
+    <string name="family_clock_current_time" tools:ignore="MissingTranslation">Time: %1$s · %2$s. If wrong, open Settings.</string>
     <string name="family_status" tools:ignore="MissingTranslation">%1$s · %2$s remaining</string>
     <string name="family_status_adult" tools:ignore="MissingTranslation">%1$s · %2$s</string>
     <string name="family_unlimited" tools:ignore="MissingTranslation">No time limit</string>

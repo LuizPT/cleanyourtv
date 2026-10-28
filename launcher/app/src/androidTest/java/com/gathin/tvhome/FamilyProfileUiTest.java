@@ -63,6 +63,8 @@ public final class FamilyProfileUiTest {
 
     @Before public void setUp() throws Exception {
         Assume.assumeTrue("Family profile UI tests are restricted to Android emulators", isEmulator());
+        InstrumentationRegistry.getInstrumentation().sendKeyDownUpSync(KeyEvent.KEYCODE_HOME);
+        InstrumentationRegistry.getInstrumentation().waitForIdleSync();
         Context target = InstrumentationRegistry.getInstrumentation().getTargetContext();
         familyFile = new File(target.getFilesDir(), "family-profiles.properties");
         pinFile = new File(target.getFilesDir(), "launcher-state.properties");
@@ -142,6 +144,10 @@ public final class FamilyProfileUiTest {
         assertNotNull("D-pad down should focus Manage profiles; focused node: "
                 + currentFocusDescription() + "; manage: " + manageState, manageFocus);
         manageFocus.recycle();
+        InstrumentationRegistry.getInstrumentation().sendKeyDownUpSync(KeyEvent.KEYCODE_DPAD_RIGHT);
+        assertFocusedView(R.id.familyProfileRefresh, "D-pad right should reach Refresh beside Manage profiles");
+        InstrumentationRegistry.getInstrumentation().sendKeyDownUpSync(KeyEvent.KEYCODE_DPAD_LEFT);
+        assertFocusedView(R.id.familyManageProfiles, "D-pad left should return to Manage profiles");
         InstrumentationRegistry.getInstrumentation().sendKeyDownUpSync(KeyEvent.KEYCODE_DPAD_CENTER);
         InstrumentationRegistry.getInstrumentation().waitForIdleSync();
 
@@ -150,6 +156,123 @@ public final class FamilyProfileUiTest {
                 authDialog.contains(getString(R.string.family_management)));
         assertFalse("Overlay settings appeared before sequence authentication",
                 authDialog.contains(getString(R.string.family_time_bar_open_settings)));
+    }
+
+    @Test public void manualRefreshKeepsSelectorAndFocusWithoutChangingUsageOrSchedules() throws Exception {
+        launchMainActivity();
+        awaitVisibleText(getString(R.string.family_select_profile));
+        Dialog originalSelector = field(activity, "familySelectorDialog", Dialog.class);
+        assertNotNull(originalSelector);
+        FamilyProfileStore store = new FamilyProfileStore(familyFile);
+        LocalDate today = LocalDate.now(ZoneId.systemDefault());
+        FamilyProfileStore.Snapshot before = store.snapshot(today);
+        InstrumentationRegistry.getInstrumentation().runOnMainSync(() ->
+                originalSelector.findViewById(R.id.familyProfileRefresh).requestFocus());
+        clickView(R.id.familyProfileRefresh);
+        InstrumentationRegistry.getInstrumentation().waitForIdleSync();
+
+        Dialog refreshedSelector = field(activity, "familySelectorDialog", Dialog.class);
+        assertTrue("Manual refresh must update the existing selector in place",
+                originalSelector == refreshedSelector && refreshedSelector.isShowing());
+        assertFocusedView(R.id.familyProfileRefresh, "Refresh should retain D-pad focus");
+        FamilyProfileStore.Snapshot after = store.snapshot(today);
+        assertEquals(before.childUsedMs, after.childUsedMs);
+        assertEquals(before.xboxUsedMs, after.xboxUsedMs);
+        assertEquals(before.childExtensionMs, after.childExtensionMs);
+        assertEquals(before.xboxExtensionMs, after.xboxExtensionMs);
+        assertEquals(before.childSchedule.startMinute, after.childSchedule.startMinute);
+        assertEquals(before.childSchedule.endMinute, after.childSchedule.endMinute);
+        assertEquals(before.childSchedule.budgetMs, after.childSchedule.budgetMs);
+        assertEquals(before.xboxSchedule.startMinute, after.xboxSchedule.startMinute);
+        assertEquals(before.xboxSchedule.endMinute, after.xboxSchedule.endMinute);
+        assertEquals(before.xboxSchedule.budgetMs, after.xboxSchedule.budgetMs);
+    }
+
+    @Test public void uncertainClockRefreshRequiresAdultSequenceAndExplicitConfirmation() throws Exception {
+        launchMainActivity();
+        awaitVisibleText(getString(R.string.family_select_profile));
+        Dialog originalSelector = field(activity, "familySelectorDialog", Dialog.class);
+        FamilyProfileStore store = new FamilyProfileStore(familyFile);
+        LocalDate today = LocalDate.now(ZoneId.systemDefault());
+        long wall = System.currentTimeMillis();
+        long elapsed = SystemClock.elapsedRealtime();
+        assertFalse("A backwards wall-clock change should require review",
+                store.observeClock(wall - 60 * 60_000L, elapsed, today));
+        assertTrue(store.snapshot(today).clockUncertain);
+
+        BroadcastReceiver receiver = field(activity, "familyScreenReceiver", BroadcastReceiver.class);
+        InstrumentationRegistry.getInstrumentation().runOnMainSync(() -> receiver.onReceive(activity,
+                new Intent(Intent.ACTION_TIME_CHANGED)));
+        InstrumentationRegistry.getInstrumentation().waitForIdleSync();
+        assertTrue("Clock uncertainty must be visible in the selector warning",
+                awaitVisibleText(getString(R.string.family_clock_uncertain))
+                        .contains(getString(R.string.family_clock_uncertain)));
+        assertTrue("Clock uncertainty must remain persisted until Adult confirmation",
+                store.snapshot(today).clockUncertain);
+
+        FamilyProfileStore.Snapshot before = store.snapshot(today);
+        clickView(R.id.familyProfileRefresh);
+        awaitVisibleText(getString(R.string.family_adult_auth_subtitle));
+        enterSequence("UDLRUDLRUU");
+        InstrumentationRegistry.getInstrumentation().sendKeyDownUpSync(KeyEvent.KEYCODE_DPAD_CENTER);
+        InstrumentationRegistry.getInstrumentation().waitForIdleSync();
+        assertTrue("An incorrect sequence must not clear clock uncertainty",
+                store.snapshot(today).clockUncertain);
+
+        enterSequence("UDLRUDLRUD");
+        InstrumentationRegistry.getInstrumentation().sendKeyDownUpSync(KeyEvent.KEYCODE_DPAD_CENTER);
+        awaitViewById(R.id.familyClockConfirm);
+        assertTrue("Clock confirmation must keep the selector in place",
+                originalSelector == field(activity, "familySelectorDialog", Dialog.class));
+        clickView(R.id.familyClockConfirm);
+        InstrumentationRegistry.getInstrumentation().waitForIdleSync();
+        FamilyProfileStore.Snapshot after = store.snapshot(today);
+        assertFalse("Only authenticated confirmation should clear the uncertainty flag", after.clockUncertain);
+        assertEquals(before.childUsedMs, after.childUsedMs);
+        assertEquals(before.xboxUsedMs, after.xboxUsedMs);
+        assertEquals(before.childExtensionMs, after.childExtensionMs);
+        assertEquals(before.xboxExtensionMs, after.xboxExtensionMs);
+        assertTrue(originalSelector.isShowing());
+    }
+
+    @Test public void childCanExitToSelectorButHomeKeepsChildProfileActive() throws Exception {
+        launchMainActivity();
+        awaitVisibleText(getString(R.string.family_select_profile));
+        InstrumentationRegistry.getInstrumentation().sendKeyDownUpSync(KeyEvent.KEYCODE_BACK);
+        InstrumentationRegistry.getInstrumentation().waitForIdleSync();
+        MainActivity target = (MainActivity) activity;
+        InstrumentationRegistry.getInstrumentation().runOnMainSync(() -> invokePrivate(target,
+                "setActiveFamilyProfile", new Class<?>[]{FamilyTimePolicy.Profile.class},
+                new Object[]{FamilyTimePolicy.Profile.CHILD_TV}));
+        assertEquals(FamilyTimePolicy.Profile.CHILD_TV,
+                field(target, "activeFamilyProfile", FamilyTimePolicy.Profile.class));
+        FamilyProfileStore childStore = new FamilyProfileStore(familyFile);
+        LocalDate today = LocalDate.now(ZoneId.systemDefault());
+        long usageBeforeExit = childStore.snapshot(today).childUsedMs;
+        assertFalse("The child launcher must not carry an orphaned app session", childStore.hasPendingSession());
+
+        AccessibilityNodeInfo exit = awaitViewById(R.id.btnFamilyLock);
+        assertNotNull("Child profile should expose a voluntary exit action", exit);
+        assertEquals(getString(R.string.family_exit_profile), String.valueOf(exit.getText()));
+        exit.recycle();
+        InstrumentationRegistry.getInstrumentation().runOnMainSync(() -> target.onNewIntent(
+                new Intent(Intent.ACTION_MAIN).addCategory(Intent.CATEGORY_HOME)));
+        assertEquals("Home must continue to stay in the child-scoped launcher",
+                FamilyTimePolicy.Profile.CHILD_TV,
+                field(target, "activeFamilyProfile", FamilyTimePolicy.Profile.class));
+
+        InstrumentationRegistry.getInstrumentation().runOnMainSync(() -> {
+            View button = target.findViewById(R.id.btnFamilyLock);
+            assertNotNull(button);
+            assertTrue("Exit should remain usable with OK", button.performClick());
+        });
+        awaitVisibleText(getString(R.string.family_select_profile));
+        assertNull("Exit profile must clear only the active profile",
+                field(target, "activeFamilyProfile", FamilyTimePolicy.Profile.class));
+        assertEquals("Leaving the child profile must not discard its daily usage", usageBeforeExit,
+                childStore.snapshot(today).childUsedMs);
+        assertFalse("Leaving the child profile must not create a session",
+                childStore.hasPendingSession());
     }
 
     @Test public void profileManagementActionRequiresParentalSequence() throws Exception {

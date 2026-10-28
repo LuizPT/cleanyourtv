@@ -200,6 +200,10 @@
     <string name="family_adult_auth_subtitle">Introduza a sequência</string>
     <string name="family_adult_auth_help">OK confirma · Voltar apaga</string>
     <string name="family_lock_profile">Bloquear perfil</string>
+    <string name="family_exit_profile">Sair do perfil</string>
+    <string name="family_refresh_profiles">Atualizar</string>
+    <string name="family_updated">Atualizado</string>
+    <string name="family_clock_current_time">Hora: %1$s · %2$s. Se estiver incorreta, abra as Definições.</string>
     <string name="family_status">%1$s · faltam %2$s</string>
     <string name="family_status_adult">%1$s · %2$s</string>
     <string name="family_unlimited">Sem limite de tempo</string>

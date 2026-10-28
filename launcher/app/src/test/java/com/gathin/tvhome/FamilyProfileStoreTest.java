@@ -6,6 +6,8 @@ import static org.junit.Assert.assertTrue;
 
 import org.junit.Rule;
 import org.junit.Test;
+import org.junit.Before;
+import org.junit.After;
 import org.junit.rules.TemporaryFolder;
 
 import java.io.File;
@@ -18,14 +20,25 @@ import java.time.ZonedDateTime;
 import java.util.Arrays;
 import java.util.Collections;
 import java.util.Set;
+import java.util.TimeZone;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicReference;
 
 public class FamilyProfileStoreTest {
     private static final ZoneId LISBON = ZoneId.of("Europe/Lisbon");
+    private TimeZone originalZone;
 
     @Rule public TemporaryFolder folder = new TemporaryFolder();
+
+    @Before public void setUpLocalTestZone() {
+        originalZone = TimeZone.getDefault();
+        TimeZone.setDefault(TimeZone.getTimeZone(LISBON));
+    }
+
+    @After public void restoreLocalTestZone() {
+        TimeZone.setDefault(originalZone);
+    }
 
     private FamilyProfileStore store() {
         return new FamilyProfileStore(new File(folder.getRoot(), "family-profiles.properties"));
@@ -182,6 +195,26 @@ public class FamilyProfileStoreTest {
         assertTrue(state.snapshot(day).clockUncertain);
         assertTrue(state.confirmClock(firstWall + 60_000L, 620_000L, day));
         assertFalse(store().snapshot(day).clockUncertain);
+    }
+
+    @Test public void clockConfirmationCannotDiscardAnUnreconciledSession() {
+        LocalDate day = LocalDate.of(2026, 10, 23);
+        long startWall = wall(day, 12, 0);
+        long startElapsed = 500_000L;
+        FamilyProfileStore state = store();
+        assertTrue(state.startSession(FamilyProfileStore.Profile.CHILD_TV, "video.app", day,
+                startWall, startElapsed, startElapsed, true));
+        markAppForeground(state, day, startWall, startElapsed);
+        assertFalse(state.observeClock(startWall + 3 * 60 * 60_000L,
+                startElapsed + 60_000L, day));
+
+        assertFalse("An Adult cannot clear clock uncertainty before the pending session is reconciled",
+                state.confirmClock(startWall + 3 * 60 * 60_000L,
+                        startElapsed + 60_000L, day));
+        FamilyProfileStore.Snapshot snapshot = store().snapshot(day);
+        assertTrue(snapshot.clockUncertain);
+        assertTrue(snapshot.sessionPending);
+        assertEquals(0L, snapshot.childUsedMs);
     }
 
     @Test public void unexpectedForwardClockJumpPausesFurtherUse() {
@@ -387,6 +420,83 @@ public class FamilyProfileStoreTest {
                 startMono + 60_000L, startMono + 60_000L);
         assertEquals(30_000L, store().snapshot(day).childUsedMs);
         assertEquals(30_000L, store().snapshot(day.plusDays(1)).childUsedMs);
+    }
+
+    @Test public void longScreenOffAcrossNextDayPreservesBalancesAndDoesNotChargeSuspension() {
+        LocalDate day = LocalDate.of(2026, 10, 23);
+        long startWall = wall(day, 22, 57);
+        long elapsed = 5_000_000L;
+        long uptime = elapsed;
+        FamilyProfileStore state = store();
+        assertTrue(state.startSession(FamilyProfileStore.Profile.CHILD_TV, "video.app", day,
+                startWall, elapsed, uptime, true));
+        markAppForeground(state, day, startWall, elapsed);
+
+        long screenOffWall = startWall + 3 * FamilyTimePolicy.MINUTE_MS;
+        long screenOffElapsed = elapsed + 3 * FamilyTimePolicy.MINUTE_MS;
+        long screenOffUptime = uptime + 3 * FamilyTimePolicy.MINUTE_MS;
+        assertTrue(state.setSessionScreenOn(false, day, screenOffWall,
+                screenOffElapsed, screenOffUptime).saved);
+        assertTrue(state.markReturnHomeOnWake());
+
+        LocalDate resumedDay = day.plusDays(1);
+        long resumedWall = wall(resumedDay, 14, 0);
+        long suspendedElapsed = screenOffElapsed + resumedWall - screenOffWall;
+        // uptimeMillis excludes deep sleep, so no uptime advances during the long suspended interval.
+        long resumedUptime = screenOffUptime;
+        assertTrue(state.setSessionScreenOn(true, resumedDay, resumedWall,
+                suspendedElapsed, resumedUptime).saved);
+        assertTrue(state.setSessionForeground(false, "com.gathin.tvhome", resumedDay,
+                resumedWall, suspendedElapsed, resumedUptime).saved);
+        assertTrue(state.finishSession(resumedDay, resumedWall, suspendedElapsed, resumedUptime).saved);
+
+        FamilyProfileStore.Snapshot previousDay = store().snapshot(day);
+        FamilyProfileStore.Snapshot currentDay = store().snapshot(resumedDay);
+        assertEquals(3 * FamilyTimePolicy.MINUTE_MS, previousDay.childUsedMs);
+        assertEquals(0L, currentDay.childUsedMs);
+        assertEquals(0L, currentDay.xboxUsedMs);
+        assertEquals(0L, currentDay.childExtensionMs);
+        assertEquals(0L, currentDay.xboxExtensionMs);
+        assertEquals(60L * FamilyTimePolicy.MINUTE_MS, previousDay.childSchedule.budgetMs);
+        assertFalse(currentDay.clockUncertain);
+        assertTrue(currentDay.mustReturnHome);
+        assertFalse(currentDay.sessionPending);
+    }
+
+    @Test public void dailyUsageSplitsUsingCurrentSystemTimeZoneWithoutDuplicatingMinutes() {
+        TimeZone originalZone = TimeZone.getDefault();
+        try {
+            TimeZone.setDefault(TimeZone.getTimeZone("Europe/Lisbon"));
+            LocalDate lisbonDay = LocalDate.of(2026, 1, 2);
+            long startWall = lisbonDay.atTime(7, 50).atZone(LISBON).toInstant().toEpochMilli();
+            long startElapsed = 6_000_000L;
+            FamilyProfileStore state = new FamilyProfileStore(
+                    new File(folder.getRoot(), "family-profiles.properties"));
+            assertTrue(state.startSession(FamilyProfileStore.Profile.CHILD_TV, "video.app", lisbonDay,
+                    startWall, startElapsed, startElapsed, true));
+            markAppForeground(state, lisbonDay, startWall, startElapsed);
+
+            TimeZone.setDefault(TimeZone.getTimeZone("America/Los_Angeles"));
+            long endWall = startWall + 20 * FamilyTimePolicy.MINUTE_MS;
+            LocalDate endDay = java.time.Instant.ofEpochMilli(endWall)
+                    .atZone(ZoneId.systemDefault()).toLocalDate();
+            assertEquals(LocalDate.of(2026, 1, 2), endDay);
+            assertTrue(state.finishSession(endDay, endWall,
+                    startElapsed + 20 * FamilyTimePolicy.MINUTE_MS,
+                    startElapsed + 20 * FamilyTimePolicy.MINUTE_MS).saved);
+
+            FamilyProfileStore persisted = new FamilyProfileStore(
+                    new File(folder.getRoot(), "family-profiles.properties"));
+            assertEquals(10 * FamilyTimePolicy.MINUTE_MS,
+                    persisted.snapshot(LocalDate.of(2026, 1, 1)).childUsedMs);
+            assertEquals(10 * FamilyTimePolicy.MINUTE_MS,
+                    persisted.snapshot(LocalDate.of(2026, 1, 2)).childUsedMs);
+            assertEquals(20 * FamilyTimePolicy.MINUTE_MS,
+                    persisted.snapshot(LocalDate.of(2026, 1, 1)).childUsedMs
+                            + persisted.snapshot(LocalDate.of(2026, 1, 2)).childUsedMs);
+        } finally {
+            TimeZone.setDefault(originalZone);
+        }
     }
 
     @Test public void daylightSavingJumpDoesNotLookLikeManualClockChange() {

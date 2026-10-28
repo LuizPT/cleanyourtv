@@ -25,6 +25,7 @@ import java.time.ZoneId;
 import java.time.ZonedDateTime;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.TimeZone;
 
 /**
  * Runs only while a family profile has launched another app. Usage Access supplies package-level
@@ -36,7 +37,6 @@ public final class FamilySessionMonitorService extends Service {
     private static final int NOTIFICATION_ID = 2404;
     private static final long POLL_MS = 10_000L;
     private static final long HOME_RETRY_MS = 4_000L;
-    private static final ZoneId FAMILY_ZONE = ZoneId.of("Europe/Lisbon");
 
     private final Handler mainHandler = new Handler(Looper.getMainLooper());
     private HandlerThread workerThread;
@@ -53,11 +53,24 @@ public final class FamilySessionMonitorService extends Service {
     private volatile String overlayTerminalNotice;
     private boolean monitorFailureShown;
 
+    private static boolean isFamilyClockChange(String action) {
+        return Intent.ACTION_TIME_CHANGED.equals(action) || Intent.ACTION_DATE_CHANGED.equals(action)
+                || Intent.ACTION_TIMEZONE_CHANGED.equals(action);
+    }
+
     private final BroadcastReceiver screenReceiver = new BroadcastReceiver() {
         @Override public void onReceive(Context context, Intent intent) {
             if (store == null || intent == null) return;
-            ZonedDateTime now = ZonedDateTime.now(FAMILY_ZONE);
-            boolean screenOn = Intent.ACTION_SCREEN_ON.equals(intent.getAction());
+            String action = intent.getAction();
+            if (Intent.ACTION_TIMEZONE_CHANGED.equals(action)) TimeZone.setDefault(null);
+            if (isFamilyClockChange(action)) {
+                Handler worker = workerHandler;
+                if (worker != null) worker.post(FamilySessionMonitorService.this::pollForeground);
+                return;
+            }
+            boolean screenOn = Intent.ACTION_SCREEN_ON.equals(action);
+            if (!screenOn && !Intent.ACTION_SCREEN_OFF.equals(action)) return;
+            ZonedDateTime now = ZonedDateTime.now(ZoneId.systemDefault());
             if (!screenOn) hideTimeBar();
             Handler worker = workerHandler;
             if (worker == null) return;
@@ -87,6 +100,9 @@ public final class FamilySessionMonitorService extends Service {
         IntentFilter filter = new IntentFilter();
         filter.addAction(Intent.ACTION_SCREEN_OFF);
         filter.addAction(Intent.ACTION_SCREEN_ON);
+        filter.addAction(Intent.ACTION_TIME_CHANGED);
+        filter.addAction(Intent.ACTION_DATE_CHANGED);
+        filter.addAction(Intent.ACTION_TIMEZONE_CHANGED);
         registerReceiver(screenReceiver, filter);
         receiverRegistered = true;
     }
@@ -112,7 +128,7 @@ public final class FamilySessionMonitorService extends Service {
                     schedulePoll();
                     return;
                 }
-                FamilyProfileStore.Snapshot snapshot = store.snapshot(LocalDate.now(FAMILY_ZONE));
+                FamilyProfileStore.Snapshot snapshot = store.snapshot(LocalDate.now(ZoneId.systemDefault()));
                 tracker = new FamilyForegroundTracker(snapshot.sessionPackageObserved
                         ? snapshot.sessionPackage : null);
                 pollForeground();
@@ -156,7 +172,7 @@ public final class FamilySessionMonitorService extends Service {
             return;
         }
 
-        ZonedDateTime now = ZonedDateTime.now(FAMILY_ZONE);
+        ZonedDateTime now = ZonedDateTime.now(ZoneId.systemDefault());
         long wallNow = now.toInstant().toEpochMilli();
         long elapsedNow = SystemClock.elapsedRealtime();
         long uptimeNow = SystemClock.uptimeMillis();
@@ -383,7 +399,7 @@ public final class FamilySessionMonitorService extends Service {
     }
 
     private Notification buildNotification() {
-        FamilyProfileStore.Snapshot snapshot = store.snapshot(LocalDate.now(FAMILY_ZONE));
+        FamilyProfileStore.Snapshot snapshot = store.snapshot(LocalDate.now(ZoneId.systemDefault()));
         String title = getString(R.string.family_monitor_notification_title);
         String profile = snapshot.sessionProfile == FamilyProfileStore.Profile.ADULT
                 ? getString(R.string.family_profile_adult)

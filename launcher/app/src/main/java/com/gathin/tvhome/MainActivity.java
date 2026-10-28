@@ -81,6 +81,7 @@ import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
+import java.util.TimeZone;
 
 /**
  * tvOS style home: black, a pinned dock row, an app grid, and one glass highlight that springs between tiles.
@@ -92,7 +93,6 @@ public class MainActivity extends Activity implements AppAdapter.TileListener {
     static final String ACTION_SHOW_INPUTS = "com.gathin.tvhome.action.SHOW_INPUTS";
     static final String ACTION_OPEN_SETTINGS = "com.gathin.tvhome.action.OPEN_SETTINGS";
     private static final long MINUTE_MS = 60_000L;
-    private static final ZoneId FAMILY_ZONE = ZoneId.of("Europe/Lisbon");
     private static final String FAMILY_XBOX_TIMING_TAG = "FamilyXboxTiming";
     private String liveTvPkg;
     private String liveTvAction;
@@ -112,6 +112,16 @@ public class MainActivity extends Activity implements AppAdapter.TileListener {
     private boolean familySelectorShowing;
     private Dialog familySelectorDialog;
     private boolean familyScreenReceiverRegistered;
+    private View familySelectorAdultTile;
+    private View familySelectorChildTile;
+    private View familySelectorXboxTile;
+    private TextView familySelectorClockWarning;
+    private TextView familySelectorMonitorWarning;
+    private TextView familySelectorSessionWarning;
+    private TextView familySelectorCredentialWarning;
+    private TextView familySelectorChildStatus;
+    private TextView familySelectorXboxStatus;
+    private View familySelectorRefreshButton;
     private boolean familyLimitNotified;
     private boolean familyLaunchInFlight;
     private int diagnosticMinutesNextLaunch;
@@ -164,12 +174,20 @@ public class MainActivity extends Activity implements AppAdapter.TileListener {
     private final Handler handler = new Handler(Looper.getMainLooper());
     private final BroadcastReceiver familyScreenReceiver = new BroadcastReceiver() {
         @Override public void onReceive(Context context, Intent intent) {
-            if (intent != null && Intent.ACTION_SCREEN_OFF.equals(intent.getAction())) {
-                adultProfileAccessWindow.invalidate();
+            if (intent == null) return;
+            String action = intent.getAction();
+            if (Intent.ACTION_TIMEZONE_CHANGED.equals(action)) TimeZone.setDefault(null);
+            if (isFamilyClockChange(action)) {
+                handler.post(() -> refreshFamilyClockAfterSystemChange());
+                return;
             }
-            if (familyStore == null || intent == null) return;
+            boolean on = Intent.ACTION_SCREEN_ON.equals(action);
+            if (!on && !Intent.ACTION_SCREEN_OFF.equals(action)) return;
+            // A screen-on event also closes the re-entry window if this device missed SCREEN_OFF.
+            adultProfileAccessWindow.invalidate();
+            if (familyStore == null) return;
             if (!familyStore.isEnabled() && !familyStore.hasPendingSession()) return;
-            boolean on = Intent.ACTION_SCREEN_ON.equals(intent.getAction());
+            if (on && activeFamilyProfile == FamilyTimePolicy.Profile.ADULT) setActiveFamilyProfile(null);
             if (!on) familyStore.markReturnHomeOnWake();
             FamilyProfileStore.UsageUpdate update = familyStore.setSessionScreenOn(on, familyToday(),
                     System.currentTimeMillis(), SystemClock.elapsedRealtime(), SystemClock.uptimeMillis());
@@ -190,6 +208,7 @@ public class MainActivity extends Activity implements AppAdapter.TileListener {
                     // Android 9 permits this while the process is alive; newer systems may require Home manually.
                 }
             }
+            if (on && familyActivityResumed) handler.post(MainActivity.this::refreshFamilySelectorForResume);
         }
     };
     /** Refreshes the network pill when the connection changes: at boot Wi-Fi often connects after Home is shown. */
@@ -248,6 +267,7 @@ public class MainActivity extends Activity implements AppAdapter.TileListener {
             updateGreeting();
             updateWifiLabel();
             refreshFamilyProfileAccess(true);
+            refreshFamilyProfileSelectorViews();
             handler.postDelayed(this, MINUTE_MS);
         }
     };
@@ -379,7 +399,7 @@ public class MainActivity extends Activity implements AppAdapter.TileListener {
             showLauncherTools();
             return true;
         });
-        btnFamilyLock.setOnClickListener(v -> lockAdultProfile());
+        btnFamilyLock.setOnClickListener(v -> leaveFamilyProfile());
 
         // Keep focus on the top bar at its ends and at the top: Android's focus finder would otherwise
         // jump to a tile far below when there is nothing in that direction.
@@ -402,6 +422,10 @@ public class MainActivity extends Activity implements AppAdapter.TileListener {
             if (keyCode == KeyEvent.KEYCODE_DPAD_RIGHT) {
                 if (rtl) return v.getId() == R.id.btnInputs
                         || (v.getId() == R.id.btnWifi && btnInputs.getVisibility() != View.VISIBLE);
+                if (hasFamilyLock && v.getId() == R.id.btnSettings) {
+                    btnFamilyLock.requestFocus();
+                    return true;
+                }
                 return v.getId() == (hasFamilyLock ? R.id.btnFamilyLock : R.id.btnSettings);
             }
             return false;
@@ -512,7 +536,10 @@ public class MainActivity extends Activity implements AppAdapter.TileListener {
         updateGreeting();
         updateWifiLabel();
         updateInputsButton();
+        observeFamilyClockNow();
+        refreshFamilyProfileAccess(true);
         updateFamilyStatus();
+        refreshFamilyProfileSelectorViews();
         handler.postDelayed(minuteTick, MINUTE_MS);
     }
 
@@ -1145,16 +1172,21 @@ public class MainActivity extends Activity implements AppAdapter.TileListener {
 
     /** Keeps the profile chooser underneath authentication and retries incorrect sequences in place. */
     private void authenticateAdultProfile(Dialog selectorDialog) {
-        if (!parentalStateAvailable()) return;
-        Runnable enterAdult = () -> {
-            long now = SystemClock.elapsedRealtime();
-            if (!adultProfileAccessWindow.permitsReentry(now)) adultProfileAccessWindow.markAuthenticated(now);
+        authenticateAdultAction(R.string.family_sequence_adult_auth, R.string.family_adult_auth_subtitle, () -> {
             selectorDialog.dismiss();
             familySelectorShowing = false;
             selectFamilyProfile(FamilyTimePolicy.Profile.ADULT);
+        });
+    }
+
+    private void authenticateAdultAction(int title, int subtitle, Runnable onAuthorized) {
+        if (!parentalStateAvailable()) return;
+        Runnable authorized = () -> {
+            adultProfileAccessWindow.markAuthenticated(SystemClock.elapsedRealtime());
+            onAuthorized.run();
         };
         if (launcherState.isUnlockSequenceConfigured()) {
-            showAdultProfileSequenceEntry(enterAdult);
+            showFamilyAdultSequenceEntry(title, subtitle, authorized);
             return;
         }
         if (launcherState.hasStorageError()) {
@@ -1168,7 +1200,7 @@ public class MainActivity extends Activity implements AppAdapter.TileListener {
                 if (result == LauncherState.PinResult.MATCH) {
                     setupUnlockSequence(() -> {
                         Toast.makeText(this, R.string.sequence_saved, Toast.LENGTH_SHORT).show();
-                        enterAdult.run();
+                        authorized.run();
                     });
                 } else {
                     handleCredentialResult(result, () -> { }, false);
@@ -1179,9 +1211,9 @@ public class MainActivity extends Activity implements AppAdapter.TileListener {
         Toast.makeText(this, R.string.parental_state_unavailable, Toast.LENGTH_SHORT).show();
     }
 
-    private void showAdultProfileSequenceEntry(Runnable onAuthorized) {
-        showSequenceEntryDialog(getString(R.string.family_sequence_adult_auth),
-                LauncherState.UNLOCK_SEQUENCE_MAX_LEGACY_MOVES, R.string.family_adult_auth_subtitle,
+    private void showFamilyAdultSequenceEntry(int title, int subtitle, Runnable onAuthorized) {
+        showSequenceEntryDialog(getString(title),
+                LauncherState.UNLOCK_SEQUENCE_MAX_LEGACY_MOVES, subtitle,
                 null, () -> { }, true, onAuthorized);
     }
 
@@ -2111,11 +2143,47 @@ public class MainActivity extends Activity implements AppAdapter.TileListener {
     }
 
     private LocalDate familyToday() {
-        return LocalDate.now(FAMILY_ZONE);
+        return LocalDate.now(ZoneId.systemDefault());
     }
 
     private ZonedDateTime familyNow() {
-        return ZonedDateTime.now(FAMILY_ZONE);
+        return ZonedDateTime.now(ZoneId.systemDefault());
+    }
+
+    private static boolean isFamilyClockChange(String action) {
+        return Intent.ACTION_TIME_CHANGED.equals(action) || Intent.ACTION_DATE_CHANGED.equals(action)
+                || Intent.ACTION_TIMEZONE_CHANGED.equals(action);
+    }
+
+    private FamilyProfileStore.Snapshot observeFamilyClockNow() {
+        if (familyStore == null) return null;
+        ZonedDateTime now = familyNow();
+        familyStore.observeClock(now.toInstant().toEpochMilli(), SystemClock.elapsedRealtime(), now.toLocalDate());
+        return familyStore.snapshot(now.toLocalDate());
+    }
+
+    private void refreshFamilyClockAfterSystemChange() {
+        if (familyStore == null || (!familyStore.isEnabled() && !familyStore.hasPendingSession())) return;
+        FamilyProfileStore.Snapshot snapshot = observeFamilyClockNow();
+        if (familyStore.hasStorageError()) {
+            if (familyActivityResumed) Toast.makeText(this, R.string.family_storage_error, Toast.LENGTH_LONG).show();
+            return;
+        }
+        updateFamilyStatus();
+        if (activeFamilyProfile != null) refreshFamilyProfileAccess(true);
+        if (snapshot != null && familySelectorDialog != null && familySelectorDialog.isShowing()) {
+            refreshFamilyProfileSelectorViews();
+        } else if (familyActivityResumed && activeFamilyProfile == null) {
+            maybeShowFamilyProfileSelector();
+        }
+    }
+
+    private void refreshFamilySelectorForResume() {
+        if (familyStore == null || !familyEnabled()) return;
+        observeFamilyClockNow();
+        refreshFamilyProfileAccess(true);
+        refreshFamilyProfileSelectorViews();
+        if (activeFamilyProfile == null) maybeShowFamilyProfileSelector();
     }
 
     private boolean familyEnabled() {
@@ -2158,6 +2226,9 @@ public class MainActivity extends Activity implements AppAdapter.TileListener {
         IntentFilter filter = new IntentFilter();
         filter.addAction(Intent.ACTION_SCREEN_OFF);
         filter.addAction(Intent.ACTION_SCREEN_ON);
+        filter.addAction(Intent.ACTION_TIME_CHANGED);
+        filter.addAction(Intent.ACTION_DATE_CHANGED);
+        filter.addAction(Intent.ACTION_TIMEZONE_CHANGED);
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
             registerReceiver(familyScreenReceiver, filter, Context.RECEIVER_NOT_EXPORTED);
         } else {
@@ -2457,8 +2528,17 @@ public class MainActivity extends Activity implements AppAdapter.TileListener {
 
     private void updateFamilyStatus() {
         if (btnFamilyLock != null) {
-            btnFamilyLock.setVisibility(familyEnabled() && activeFamilyProfile == FamilyTimePolicy.Profile.ADULT
-                    ? View.VISIBLE : View.GONE);
+            boolean adult = activeFamilyProfile == FamilyTimePolicy.Profile.ADULT;
+            boolean child = activeFamilyProfile == FamilyTimePolicy.Profile.CHILD_TV;
+            boolean showExit = familyEnabled() && (adult || child);
+            btnFamilyLock.setVisibility(showExit ? View.VISIBLE : View.GONE);
+            if (showExit) {
+                int label = adult ? R.string.family_lock_profile : R.string.family_exit_profile;
+                btnFamilyLock.setText(label);
+                btnFamilyLock.setContentDescription(getString(label));
+                btnFamilyLock.setCompoundDrawablesWithIntrinsicBounds(getDrawable(adult
+                        ? R.drawable.ic_lock : android.R.drawable.ic_menu_revert), null, null, null);
+            }
         }
         if (familyStatus == null) return;
         if (!familyEnabled() || activeFamilyProfile == null) {
@@ -2578,26 +2658,14 @@ public class MainActivity extends Activity implements AppAdapter.TileListener {
         title.setId(R.id.familyProfileTitle);
         title.setGravity(Gravity.CENTER);
         panel.addView(title, new LinearLayout.LayoutParams(-2, -2));
-        if (snapshot.clockUncertain) {
-            TextView warning = familyText(R.string.family_clock_uncertain, 13, 0xFFFFD180);
-            warning.setGravity(Gravity.CENTER);
-            LinearLayout.LayoutParams warningLp = new LinearLayout.LayoutParams(-1, -2);
-            warningLp.topMargin = dp(4);
-            panel.addView(warning, warningLp);
-        }
-        if (!FamilyUsageAccess.isGranted(this)) {
-            TextView warning = familyText(R.string.family_monitor_required, 13, 0xFFFFD180);
-            warning.setGravity(Gravity.CENTER);
-            LinearLayout.LayoutParams warningLp = new LinearLayout.LayoutParams(-1, -2);
-            warningLp.topMargin = dp(4);
-            panel.addView(warning, warningLp);
-        } else if (snapshot.sessionPending) {
-            TextView warning = familyText(R.string.family_session_recovery, 13, 0xFFFFD180);
-            warning.setGravity(Gravity.CENTER);
-            LinearLayout.LayoutParams warningLp = new LinearLayout.LayoutParams(-1, -2);
-            warningLp.topMargin = dp(4);
-            panel.addView(warning, warningLp);
-        }
+        familySelectorClockWarning = familySelectorWarning(panel, R.string.family_clock_uncertain);
+        familySelectorMonitorWarning = familySelectorWarning(panel, R.string.family_monitor_required);
+        familySelectorSessionWarning = familySelectorWarning(panel, R.string.family_session_recovery);
+        familySelectorClockWarning.setVisibility(snapshot.clockUncertain ? View.VISIBLE : View.GONE);
+        boolean usageAccess = FamilyUsageAccess.isGranted(this);
+        familySelectorMonitorWarning.setVisibility(!usageAccess ? View.VISIBLE : View.GONE);
+        familySelectorSessionWarning.setVisibility(usageAccess && snapshot.sessionPending
+                ? View.VISIBLE : View.GONE);
 
         boolean adultPin = launcherState.hasParentalCredential() && !launcherState.hasStorageError();
         int minimumCardSizeDp = compactProfileLayout ? 84 : 112;
@@ -2630,6 +2698,7 @@ public class MainActivity extends Activity implements AppAdapter.TileListener {
                 authenticateAdultProfile(dialog);
             }
         });
+        familySelectorAdultTile = adult;
         addFamilyProfileTile(choices, adult);
 
         FamilyAccessPolicy.Decision child = profileChoiceDecision(FamilyTimePolicy.Profile.CHILD_TV, snapshot, today);
@@ -2641,6 +2710,8 @@ public class MainActivity extends Activity implements AppAdapter.TileListener {
                     familySelectorShowing = false;
                     selectFamilyProfile(FamilyTimePolicy.Profile.CHILD_TV);
                 });
+        familySelectorChildTile = childButton;
+        familySelectorChildStatus = familyProfileTileStatus(childButton);
         addFamilyProfileTile(choices, childButton);
 
         boolean hasXboxInput = isConfiguredXboxInput(snapshot.xboxInputId);
@@ -2654,15 +2725,16 @@ public class MainActivity extends Activity implements AppAdapter.TileListener {
                     familySelectorShowing = false;
                     selectFamilyProfile(FamilyTimePolicy.Profile.XBOX);
                 });
+        familySelectorXboxTile = xboxButton;
+        familySelectorXboxStatus = familyProfileTileStatus(xboxButton);
         addFamilyProfileTile(choices, xboxButton);
 
-        if (!adultPin) {
-            TextView pinHint = familyText(R.string.family_sequence_required, 13, 0xFFFFD180);
-            pinHint.setGravity(Gravity.CENTER);
-            LinearLayout.LayoutParams pinLp = new LinearLayout.LayoutParams(-1, -2);
-            pinLp.topMargin = dp(8);
-            panel.addView(pinHint, pinLp);
-        }
+        familySelectorCredentialWarning = familyText(R.string.family_sequence_required, 13, 0xFFFFD180);
+        familySelectorCredentialWarning.setGravity(Gravity.CENTER);
+        LinearLayout.LayoutParams pinLp = new LinearLayout.LayoutParams(-1, -2);
+        pinLp.topMargin = dp(8);
+        panel.addView(familySelectorCredentialWarning, pinLp);
+        familySelectorCredentialWarning.setVisibility(adultPin ? View.GONE : View.VISIBLE);
         LinearLayout actions = new LinearLayout(this);
         actions.setOrientation(LinearLayout.HORIZONTAL);
         actions.setGravity(Gravity.CENTER);
@@ -2679,6 +2751,20 @@ public class MainActivity extends Activity implements AppAdapter.TileListener {
         manage.setPadding(dp(20), dp(8), dp(20), dp(8));
         manage.setBackgroundResource(R.drawable.focus_button_bg);
         actions.addView(manage, familyActionLp());
+        TextView refresh = familyChoice(getString(R.string.family_refresh_profiles), true,
+                this::refreshFamilyProfilesManually);
+        refresh.setId(R.id.familyProfileRefresh);
+        refresh.setGravity(Gravity.CENTER);
+        refresh.setPadding(dp(16), dp(8), dp(18), dp(8));
+        refresh.setBackgroundResource(R.drawable.focus_button_bg);
+        android.graphics.drawable.Drawable refreshIcon = getDrawable(android.R.drawable.ic_popup_sync);
+        if (refreshIcon != null) {
+            refreshIcon.setTint(0xFFE2EAF5);
+            refresh.setCompoundDrawablesRelativeWithIntrinsicBounds(refreshIcon, null, null, null);
+            refresh.setCompoundDrawablePadding(dp(8));
+        }
+        actions.addView(refresh, familyActionLp());
+        familySelectorRefreshButton = refresh;
 
         boolean childEnabled = child.allowed;
         boolean xboxEnabled = hasXboxInput && xbox.allowed;
@@ -2704,6 +2790,10 @@ public class MainActivity extends Activity implements AppAdapter.TileListener {
         xboxButton.setNextFocusDownId(manage.getId());
         manage.setNextFocusUpId(adultPin ? adult.getId()
                 : childEnabled ? childButton.getId() : xboxEnabled ? xboxButton.getId() : View.NO_ID);
+        refresh.setNextFocusUpId(manage.getNextFocusUpId());
+        manage.setNextFocusRightId(refresh.getId());
+        refresh.setNextFocusLeftId(manage.getId());
+        refresh.setNextFocusRightId(View.NO_ID);
         View.OnKeyListener downToManage = (view, keyCode, event) -> {
             if (keyCode == KeyEvent.KEYCODE_DPAD_DOWN) {
                 if (event.getAction() == KeyEvent.ACTION_DOWN) manage.requestFocus();
@@ -2716,11 +2806,21 @@ public class MainActivity extends Activity implements AppAdapter.TileListener {
         xboxButton.setOnKeyListener(downToManage);
         manage.setOnKeyListener((view, keyCode, event) -> {
             if (event.getAction() != KeyEvent.ACTION_DOWN) return false;
+            if (keyCode == KeyEvent.KEYCODE_DPAD_RIGHT) return refresh.requestFocus();
             if (keyCode == KeyEvent.KEYCODE_DPAD_UP) {
                 View firstAvailable = adultPin ? adult : childEnabled ? childButton : xboxEnabled ? xboxButton : null;
                 return firstAvailable != null && firstAvailable.requestFocus();
             }
             return false;
+        });
+        refresh.setOnKeyListener((view, keyCode, event) -> {
+            if (event.getAction() != KeyEvent.ACTION_DOWN) return false;
+            if (keyCode == KeyEvent.KEYCODE_DPAD_LEFT) return manage.requestFocus();
+            if (keyCode == KeyEvent.KEYCODE_DPAD_UP) {
+                View firstAvailable = adultPin ? adult : childEnabled ? childButton : xboxEnabled ? xboxButton : null;
+                return firstAvailable != null && firstAvailable.requestFocus();
+            }
+            return keyCode == KeyEvent.KEYCODE_DPAD_DOWN;
         });
         dialog.setOnKeyListener((source, keyCode, event) -> {
             if (keyCode == KeyEvent.KEYCODE_DPAD_DOWN && event.getAction() == KeyEvent.ACTION_DOWN) {
@@ -2738,12 +2838,171 @@ public class MainActivity extends Activity implements AppAdapter.TileListener {
         dialog.setOnDismissListener(d -> {
             if (familySelectorDialog == d) familySelectorDialog = null;
             familySelectorShowing = false;
+            clearFamilySelectorViews();
         });
         dialog.show();
         Window window = dialog.getWindow();
         if (window != null) window.setLayout(ViewGroup.LayoutParams.MATCH_PARENT,
                 ViewGroup.LayoutParams.MATCH_PARENT);
         (adultPin ? adult : child.allowed ? childButton : hasXboxInput && xbox.allowed ? xboxButton : manage).requestFocus();
+        refreshFamilyProfileSelectorViews();
+    }
+
+    private TextView familySelectorWarning(LinearLayout panel, int message) {
+        TextView warning = familyText(message, 13, 0xFFFFD180);
+        warning.setGravity(Gravity.CENTER);
+        LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(-1, -2);
+        lp.topMargin = dp(4);
+        panel.addView(warning, lp);
+        return warning;
+    }
+
+    private TextView familyProfileTileStatus(View tile) {
+        return tile instanceof ViewGroup && ((ViewGroup) tile).getChildCount() > 2
+                ? (TextView) ((ViewGroup) tile).getChildAt(2) : null;
+    }
+
+    private void updateFamilyProfileTile(View tile, TextView statusView, int nameResource,
+                                         String status, boolean enabled) {
+        if (tile == null) return;
+        if (statusView != null) statusView.setText(status);
+        String name = getString(nameResource);
+        tile.setContentDescription(getString(R.string.family_profile_accessibility, name, status));
+        tile.setFocusable(enabled);
+        tile.setFocusableInTouchMode(enabled);
+        tile.setClickable(enabled);
+        tile.setEnabled(enabled);
+        tile.setAlpha(enabled ? 1f : 0.62f);
+    }
+
+    private void refreshFamilyProfileSelectorViews() {
+        if (familySelectorDialog == null || !familySelectorDialog.isShowing() || familyStore == null
+                || familyStore.hasStorageError() || familySelectorAdultTile == null
+                || familySelectorChildTile == null || familySelectorXboxTile == null) return;
+        View focused = familySelectorDialog.getWindow() == null ? null
+                : familySelectorDialog.getWindow().getCurrentFocus();
+        ZonedDateTime now = familyNow();
+        LocalDate today = now.toLocalDate();
+        FamilyProfileStore.Snapshot snapshot = familyStore.snapshot(today);
+        boolean hasCredential = launcherState.hasParentalCredential() && !launcherState.hasStorageError();
+        FamilyAccessPolicy.Decision child = profileChoiceDecision(
+                FamilyTimePolicy.Profile.CHILD_TV, snapshot, today, now);
+        FamilyAccessPolicy.Decision xbox = profileChoiceDecision(
+                FamilyTimePolicy.Profile.XBOX, snapshot, today, now);
+        boolean hasXboxInput = isConfiguredXboxInput(snapshot.xboxInputId);
+        String childStatus = familyProfileStatus(child,
+                snapshot.remainingMs(FamilyProfileStore.Profile.CHILD_TV, today), FamilyTimePolicy.Profile.CHILD_TV);
+        String xboxStatus = hasXboxInput
+                ? familyProfileStatus(xbox,
+                        snapshot.remainingMs(FamilyProfileStore.Profile.XBOX, today), FamilyTimePolicy.Profile.XBOX)
+                : getString(R.string.family_profile_xbox_configure);
+        updateFamilyProfileTile(familySelectorAdultTile, null, R.string.family_profile_adult,
+                getString(R.string.family_profile_adult_sequence_hint), hasCredential);
+        updateFamilyProfileTile(familySelectorChildTile, familySelectorChildStatus,
+                R.string.family_profile_child_short, childStatus, child.allowed);
+        updateFamilyProfileTile(familySelectorXboxTile, familySelectorXboxStatus,
+                R.string.family_profile_xbox_short, xboxStatus, hasXboxInput && xbox.allowed);
+        if (familySelectorClockWarning != null) familySelectorClockWarning.setVisibility(
+                snapshot.clockUncertain ? View.VISIBLE : View.GONE);
+        if (familySelectorMonitorWarning != null) familySelectorMonitorWarning.setVisibility(
+                FamilyUsageAccess.isGranted(this) ? View.GONE : View.VISIBLE);
+        if (familySelectorSessionWarning != null) familySelectorSessionWarning.setVisibility(
+                FamilyUsageAccess.isGranted(this) && snapshot.sessionPending ? View.VISIBLE : View.GONE);
+        if (familySelectorCredentialWarning != null) familySelectorCredentialWarning.setVisibility(
+                hasCredential ? View.GONE : View.VISIBLE);
+        if (focused != null && (!focused.isFocusable() || !focused.isEnabled())) {
+            View fallback = hasCredential ? familySelectorAdultTile
+                    : child.allowed ? familySelectorChildTile
+                    : hasXboxInput && xbox.allowed ? familySelectorXboxTile
+                    : familySelectorRefreshButton;
+            if (fallback != null) fallback.requestFocus();
+        }
+    }
+
+    private void clearFamilySelectorViews() {
+        familySelectorAdultTile = null;
+        familySelectorChildTile = null;
+        familySelectorXboxTile = null;
+        familySelectorClockWarning = null;
+        familySelectorMonitorWarning = null;
+        familySelectorSessionWarning = null;
+        familySelectorCredentialWarning = null;
+        familySelectorChildStatus = null;
+        familySelectorXboxStatus = null;
+        familySelectorRefreshButton = null;
+    }
+
+    private void refreshFamilyProfilesManually() {
+        if (!familyEnabled()) return;
+        FamilyProfileStore.Snapshot snapshot = observeFamilyClockNow();
+        if (familyStore.hasStorageError() || snapshot == null) {
+            Toast.makeText(this, R.string.family_storage_error, Toast.LENGTH_LONG).show();
+            return;
+        }
+        refreshFamilyProfileSelectorViews();
+        if (snapshot.clockUncertain || snapshot.sessionPending) {
+            authenticateAdultAction(R.string.family_clock_confirm, R.string.family_adult_auth_subtitle, () -> {
+                FamilyProfileStore.Snapshot verified = familyStore.snapshot(familyToday());
+                if (verified.sessionPending) {
+                    // Keep the unknown session intact. Adult profile selection performs the existing recovery path.
+                    refreshFamilyProfileSelectorViews();
+                    Toast.makeText(this, R.string.family_session_recovery, Toast.LENGTH_LONG).show();
+                    return;
+                }
+                showFamilyClockConfirmationDialog();
+            });
+            return;
+        }
+        Toast.makeText(this, R.string.family_updated, Toast.LENGTH_SHORT).show();
+    }
+
+    private void showFamilyClockConfirmationDialog() {
+        Dialog dialog = new Dialog(this);
+        dialog.requestWindowFeature(Window.FEATURE_NO_TITLE);
+        LinearLayout panel = familyPanel();
+        panel.setBackgroundResource(R.drawable.family_management_background);
+        panel.addView(familyText(R.string.family_clock_confirm, 22, Color.WHITE),
+                new LinearLayout.LayoutParams(-1, -2));
+        ZonedDateTime now = familyNow();
+        String date = android.text.format.DateFormat.getDateFormat(this)
+                .format(new java.util.Date(now.toInstant().toEpochMilli()));
+        String time = android.text.format.DateFormat.getTimeFormat(this)
+                .format(new java.util.Date(now.toInstant().toEpochMilli()));
+        familyManagementDetailNote(panel, getString(R.string.family_clock_current_time, date, time), 0xFFD2DCEB);
+        TextView confirm = familyChoice(getString(R.string.family_clock_confirm), true, () -> {
+            if (familyStore.hasPendingSession()) {
+                Toast.makeText(this, R.string.family_session_recovery, Toast.LENGTH_LONG).show();
+                return;
+            }
+            ZonedDateTime confirmedNow = familyNow();
+            if (!familyStore.confirmClock(confirmedNow.toInstant().toEpochMilli(),
+                    SystemClock.elapsedRealtime(), confirmedNow.toLocalDate())) {
+                Toast.makeText(this, R.string.family_storage_error, Toast.LENGTH_LONG).show();
+                return;
+            }
+            dialog.dismiss();
+            refreshFamilyProfileSelectorViews();
+            Toast.makeText(this, R.string.family_updated, Toast.LENGTH_SHORT).show();
+            if (familySelectorRefreshButton != null) familySelectorRefreshButton.requestFocus();
+        });
+        confirm.setId(R.id.familyClockConfirm);
+        panel.addView(confirm, familyChoiceLp());
+        TextView settings = familyChoice(getString(R.string.settings), true, () -> {
+            dialog.dismiss();
+            try {
+                startActivity(new Intent(Settings.ACTION_DATE_SETTINGS));
+            } catch (ActivityNotFoundException | SecurityException unavailable) {
+                Toast.makeText(this, R.string.not_available, Toast.LENGTH_LONG).show();
+            }
+        });
+        panel.addView(settings, familyChoiceLp());
+        TextView cancel = familyChoice(getString(R.string.cancel), true, dialog::dismiss);
+        panel.addView(cancel, familyChoiceLp());
+        dialog.setContentView(panel);
+        configureFamilyDialog(dialog, 0.35f);
+        dialog.show();
+        sizeFamilyDialog(dialog, 0.52f);
+        confirm.requestFocus();
     }
 
     private void addFamilyProfileTile(LinearLayout row, View tile) {
@@ -2768,7 +3027,7 @@ public class MainActivity extends Activity implements AppAdapter.TileListener {
         tile.setAlpha(enabled ? 1f : 0.62f);
         String name = getString(nameResource);
         tile.setContentDescription(getString(R.string.family_profile_accessibility, name, status));
-        if (enabled) tile.setOnClickListener(v -> action.run());
+        tile.setOnClickListener(v -> action.run());
 
         FrameLayout artworkFrame = new FrameLayout(this);
         artworkFrame.setBackgroundResource(R.drawable.family_profile_art_frame);
@@ -2864,7 +3123,7 @@ public class MainActivity extends Activity implements AppAdapter.TileListener {
         FamilyTimePolicy.Schedule schedule = profile == FamilyTimePolicy.Profile.XBOX
                 ? nextDay.xboxSchedule : nextDay.childSchedule;
         int start = schedule.startMinute;
-        ZonedDateTime available = date.atStartOfDay(FAMILY_ZONE).plusMinutes(start);
+        ZonedDateTime available = date.atStartOfDay(ZoneId.systemDefault()).plusMinutes(start);
         String time = android.text.format.DateFormat.getTimeFormat(this)
                 .format(new java.util.Date(available.toInstant().toEpochMilli()));
         return getString(laterToday ? R.string.family_profile_available_today_at
@@ -2880,13 +3139,17 @@ public class MainActivity extends Activity implements AppAdapter.TileListener {
 
     private FamilyAccessPolicy.Decision profileChoiceDecision(FamilyTimePolicy.Profile profile,
             FamilyProfileStore.Snapshot snapshot, LocalDate day) {
+        return profileChoiceDecision(profile, snapshot, day, familyNow());
+    }
+
+    private FamilyAccessPolicy.Decision profileChoiceDecision(FamilyTimePolicy.Profile profile,
+            FamilyProfileStore.Snapshot snapshot, LocalDate day, ZonedDateTime now) {
         if (profile != FamilyTimePolicy.Profile.ADULT && !FamilyUsageAccess.isGranted(this)) {
             return FamilyAccessPolicy.blocked(FamilyAccessPolicy.Reason.MONITOR_REQUIRED);
         }
         if (profile != FamilyTimePolicy.Profile.ADULT && snapshot.sessionPending) {
             return FamilyAccessPolicy.blocked(FamilyAccessPolicy.Reason.SESSION_PENDING);
         }
-        ZonedDateTime now = familyNow();
         boolean xbox = profile == FamilyTimePolicy.Profile.XBOX;
         return FamilyAccessPolicy.evaluate(profile,
                 xbox ? FamilyAccessPolicy.Target.PASSTHROUGH_INPUT : FamilyAccessPolicy.Target.APP,
@@ -2952,9 +3215,11 @@ public class MainActivity extends Activity implements AppAdapter.TileListener {
         setActiveFamilyProfile(profile);
     }
 
-    private void lockAdultProfile() {
-        if (!familyEnabled() || activeFamilyProfile != FamilyTimePolicy.Profile.ADULT) return;
-        adultProfileAccessWindow.invalidate();
+    private void leaveFamilyProfile() {
+        if (!familyEnabled() || activeFamilyProfile == null) return;
+        FamilyTimePolicy.Profile leaving = activeFamilyProfile;
+        if (familyStore.hasPendingSession()) finishFamilyUsageSession();
+        if (leaving == FamilyTimePolicy.Profile.ADULT) adultProfileAccessWindow.invalidate();
         setActiveFamilyProfile(null);
         maybeShowFamilyProfileSelector();
     }
@@ -3479,6 +3744,10 @@ public class MainActivity extends Activity implements AppAdapter.TileListener {
             return;
         }
         if (!snapshot.enabled) {
+            if (snapshot.sessionPending) {
+                Toast.makeText(this, R.string.family_session_recovery, Toast.LENGTH_LONG).show();
+                return;
+            }
             ZonedDateTime verifiedNow = familyNow();
             if (!familyStore.confirmClock(verifiedNow.toInstant().toEpochMilli(),
                     SystemClock.elapsedRealtime(), verifiedNow.toLocalDate())) {
@@ -3608,6 +3877,10 @@ public class MainActivity extends Activity implements AppAdapter.TileListener {
                         familyManagementDetailNote(operations, getString(R.string.family_clock_uncertain),
                                 0xFFFFD180);
                         familyManagementDetailAction(operations, R.string.family_clock_confirm, () -> {
+                            if (familyStore.hasPendingSession()) {
+                                Toast.makeText(this, R.string.family_session_recovery, Toast.LENGTH_LONG).show();
+                                return;
+                            }
                             ZonedDateTime confirmedNow = familyNow();
                             if (familyStore.confirmClock(confirmedNow.toInstant().toEpochMilli(),
                                     SystemClock.elapsedRealtime(), confirmedNow.toLocalDate())) {
@@ -3996,7 +4269,7 @@ public class MainActivity extends Activity implements AppAdapter.TileListener {
             panel.addView(scroll, new LinearLayout.LayoutParams(-1, 0, 1f));
             View firstRow = null;
             for (DayOfWeek day : DayOfWeek.values()) {
-                FamilyProfileStore.Snapshot snapshot = familyStore.snapshot(LocalDate.now(FAMILY_ZONE)
+                FamilyProfileStore.Snapshot snapshot = familyStore.snapshot(LocalDate.now(ZoneId.systemDefault())
                         .with(java.time.temporal.TemporalAdjusters.nextOrSame(day)));
                 FamilyTimePolicy.Schedule schedule = profile == FamilyProfileStore.Profile.XBOX
                         ? snapshot.xboxSchedule : snapshot.childSchedule;
@@ -4031,7 +4304,8 @@ public class MainActivity extends Activity implements AppAdapter.TileListener {
 
     private void editFamilySchedule(FamilyProfileStore.Profile profile, DayOfWeek day, Dialog managementParent,
                                     TextView scheduleRow, String dayLabel) {
-        LocalDate referenceDate = LocalDate.now(FAMILY_ZONE).with(java.time.temporal.TemporalAdjusters.nextOrSame(day));
+        LocalDate referenceDate = LocalDate.now(ZoneId.systemDefault())
+                .with(java.time.temporal.TemporalAdjusters.nextOrSame(day));
         FamilyProfileStore.Snapshot snapshot = familyStore.snapshot(referenceDate);
         if (familyStore.hasStorageError()) {
             Toast.makeText(this, R.string.family_storage_error, Toast.LENGTH_LONG).show();

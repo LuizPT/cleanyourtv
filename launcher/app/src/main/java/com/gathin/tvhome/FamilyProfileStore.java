@@ -52,7 +52,6 @@ final class FamilyProfileStore {
     private static final String CHILD_APPS_INITIALIZED = "child_apps_initialized";
     private static final String CHILD_APPS = "child_apps";
     private static final long CLOCK_TOLERANCE_MS = 2L * 60L * 1000L;
-    private static final ZoneId FAMILY_ZONE = ZoneId.of("Europe/Lisbon");
 
     enum Profile { ADULT, CHILD_TV, XBOX }
     enum TimeBarCorner { LEFT, RIGHT }
@@ -374,7 +373,7 @@ final class FamilyProfileStore {
         synchronized (STORAGE_FILE_LOCK) {
         if (day == null) return false;
         Properties p = read();
-        if (storageError) return false;
+        if (storageError || p.getProperty(SESSION_PROFILE) != null) return false;
         p.setProperty(CLOCK_UNCERTAIN, "false");
         p.setProperty(LAST_WALL, Long.toString(wallMillis));
         p.setProperty(LAST_ELAPSED, Long.toString(elapsedMillis));
@@ -578,7 +577,7 @@ final class FamilyProfileStore {
         List<Integer> warnings = new ArrayList<>();
         if (activeDelta > 0L && profile != Profile.ADULT) {
             if (diagnostic) recordDiagnosticUse(p, activeDelta, warnings);
-            else recordAcrossDays(p, profile, previousWall, activeDelta, warnings);
+            else recordAcrossDays(p, profile, previousWall, activeDelta, warnings, ZoneId.systemDefault());
         }
         p.setProperty(SESSION_DAY, day.toString());
         p.setProperty(SESSION_ELAPSED, Long.toString(elapsedMillis));
@@ -624,14 +623,14 @@ final class FamilyProfileStore {
         return Math.max(0L, limit - Math.min(limit, used));
     }
 
-    /** Splits a monitored interval at each Europe/Lisbon civil midnight. */
+    /** Splits a monitored interval at local civil midnight using the device zone. */
     private static void recordAcrossDays(Properties p, Profile profile, long startWallMillis,
-                                         long activeDelta, List<Integer> warnings) {
+                                         long activeDelta, List<Integer> warnings, ZoneId zone) {
         long cursor = startWallMillis;
         long remainingDelta = activeDelta;
-        LocalDate date = java.time.Instant.ofEpochMilli(cursor).atZone(FAMILY_ZONE).toLocalDate();
+        LocalDate date = java.time.Instant.ofEpochMilli(cursor).atZone(zone).toLocalDate();
         while (remainingDelta > 0L) {
-            long nextMidnight = date.plusDays(1).atStartOfDay(FAMILY_ZONE).toInstant().toEpochMilli();
+            long nextMidnight = date.plusDays(1).atStartOfDay(zone).toInstant().toEpochMilli();
             long untilMidnight = nextMidnight - cursor;
             if (untilMidnight <= 0L) {
                 date = date.plusDays(1);
