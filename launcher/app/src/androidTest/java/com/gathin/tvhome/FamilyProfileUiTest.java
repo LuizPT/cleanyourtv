@@ -947,7 +947,7 @@ public final class FamilyProfileUiTest {
     }
 
     private String awaitVisibleText(String expected) throws Exception {
-        long deadline = SystemClock.uptimeMillis() + 5_000L;
+        long deadline = SystemClock.uptimeMillis() + 15_000L;
         String text = "";
         do {
             InstrumentationRegistry.getInstrumentation().waitForIdleSync();

@@ -2954,6 +2954,7 @@ public class MainActivity extends Activity implements AppAdapter.TileListener {
             return;
         }
         Toast.makeText(this, R.string.family_updated, Toast.LENGTH_SHORT).show();
+        if (familySelectorRefreshButton != null) familySelectorRefreshButton.requestFocus();
     }
 
     private void showFamilyClockConfirmationDialog() {
