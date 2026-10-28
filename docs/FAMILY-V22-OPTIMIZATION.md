@@ -14,7 +14,7 @@ A fonte passou de 110.884 para 99.488 bytes brutos. O APK final ficou 5.648 byte
 | Família v22 original (preservada) | 412.077 | -2.477 |
 | Família v22 otimizada | 406.429 | 3.171 |
 
-O APK otimizado está 1.571 bytes abaixo de 408.000. A margem medida localmente não substitui a execução real do GitHub Actions/Linux; a confirmação remota será verificada depois do push.
+O APK otimizado está 1.571 bytes abaixo de 408.000. A margem medida localmente não substitui a execução real do GitHub Actions/Linux. Depois do push para `feature/family-profiles`, não foi criada uma execução nem check para o commit. A definição do workflow na branch por omissão `custom-2.4` limita os pushes a `main`; a cópia da branch experimental inclui `feature/family-profiles`, mas o GitHub não iniciou a execução. A tentativa de dispatch manual foi rejeitada (HTTP 422), porque o workflow não declara `workflow_dispatch`. Não alterei a branch por omissão; a aprovação remota permanece pendente.
 
 ## Validação local
 
