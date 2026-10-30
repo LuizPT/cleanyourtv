@@ -27,9 +27,11 @@ final class FamilyProfileStore {
     private static final String ENABLED = "family_enabled";
     private static final String XBOX_INPUT = "xbox_input_id";
     private static final String CLOCK_UNCERTAIN = "clock_uncertain";
+    private static final String CLOCK_UNCERTAIN_REASON = "clock_uncertain_reason";
     private static final String LAST_WALL = "last_wall_ms";
     private static final String LAST_ELAPSED = "last_elapsed_ms";
     private static final String LAST_DAY = "last_day";
+    private static final String LAST_ZONE = "last_zone_id";
     private static final String SESSION_PROFILE = "session_profile";
     private static final String SESSION_DAY = "session_day";
     private static final String SESSION_ELAPSED = "session_elapsed_ms";
@@ -56,10 +58,12 @@ final class FamilyProfileStore {
     enum Profile { ADULT, CHILD_TV, XBOX }
     enum TimeBarCorner { LEFT, RIGHT }
     enum TimeBarContent { BOTH, USED, REMAINING }
+    enum ClockIssue { NONE, TIME_ADJUSTED, DEVICE_RESTARTED, SESSION_UNRECONCILED }
 
     static final class Snapshot {
         final boolean enabled;
         final boolean clockUncertain;
+        final ClockIssue clockIssue;
         final boolean sessionPending;
         final boolean sessionScreenOn;
         final boolean sessionForeground;
@@ -87,6 +91,7 @@ final class FamilyProfileStore {
         private Snapshot(Properties p, LocalDate day) {
             enabled = Boolean.parseBoolean(p.getProperty(ENABLED, "false"));
             clockUncertain = Boolean.parseBoolean(p.getProperty(CLOCK_UNCERTAIN, "false"));
+            clockIssue = enumValue(ClockIssue.class, p.getProperty(CLOCK_UNCERTAIN_REASON), ClockIssue.NONE);
             String profileValue = p.getProperty(SESSION_PROFILE);
             sessionPending = profileValue != null;
             Profile parsed = null;
@@ -359,25 +364,31 @@ final class FamilyProfileStore {
     }
 
     synchronized boolean observeClock(long wallMillis, long elapsedMillis, LocalDate day) {
+        return observeClock(wallMillis, elapsedMillis, day, ZoneId.systemDefault().getId());
+    }
+
+    synchronized boolean observeClock(long wallMillis, long elapsedMillis, LocalDate day, String zoneId) {
         synchronized (STORAGE_FILE_LOCK) {
         if (day == null) return false;
         Properties p = read();
         if (storageError) return false;
-        observeClock(p, wallMillis, elapsedMillis, day);
+        observeClock(p, wallMillis, elapsedMillis, day, zoneId);
         return write(p) && !Boolean.parseBoolean(p.getProperty(CLOCK_UNCERTAIN, "false"));
         }
     }
 
     /** Adult authenticated this adjustment. Usage records remain intact. */
     synchronized boolean confirmClock(long wallMillis, long elapsedMillis, LocalDate day) {
+        return confirmClock(wallMillis, elapsedMillis, day, ZoneId.systemDefault().getId());
+    }
+
+    synchronized boolean confirmClock(long wallMillis, long elapsedMillis, LocalDate day, String zoneId) {
         synchronized (STORAGE_FILE_LOCK) {
         if (day == null) return false;
         Properties p = read();
         if (storageError || p.getProperty(SESSION_PROFILE) != null) return false;
-        p.setProperty(CLOCK_UNCERTAIN, "false");
-        p.setProperty(LAST_WALL, Long.toString(wallMillis));
-        p.setProperty(LAST_ELAPSED, Long.toString(elapsedMillis));
-        p.setProperty(LAST_DAY, day.toString());
+        clearClockIssue(p);
+        setClockSample(p, wallMillis, elapsedMillis, day, zoneId);
         p.setProperty(MUST_RETURN_HOME, "false");
         return write(p);
         }
@@ -410,7 +421,10 @@ final class FamilyProfileStore {
         if (target.length() > 512) return false;
         Properties p = read();
         if (storageError || p.getProperty(SESSION_PROFILE) != null) return false;
-        observeClock(p, wallMillis, elapsedMillis, day);
+        if (!observeClock(p, wallMillis, elapsedMillis, day, ZoneId.systemDefault().getId())) {
+            write(p);
+            return false;
+        }
         if (Boolean.parseBoolean(p.getProperty(CLOCK_UNCERTAIN, "false"))) {
             write(p);
             return false;
@@ -527,6 +541,12 @@ final class FamilyProfileStore {
         return recordSession(day, wallMillis, elapsedMillis, uptimeMillis, null, true);
     }
 
+    private UsageUpdate finishSession(LocalDate day, long wallMillis, long elapsedMillis,
+                                       long uptimeMillis, String zoneId) {
+        return recordSession(day, wallMillis, elapsedMillis, uptimeMillis, null,
+                null, null, true, zoneId);
+    }
+
     private UsageUpdate recordSession(LocalDate day, long wallMillis, long elapsedMillis,
                                       long uptimeMillis, Boolean newScreenState, boolean finish) {
         return recordSession(day, wallMillis, elapsedMillis, uptimeMillis, newScreenState,
@@ -536,13 +556,22 @@ final class FamilyProfileStore {
     private UsageUpdate recordSession(LocalDate day, long wallMillis, long elapsedMillis,
                                       long uptimeMillis, Boolean newScreenState,
                                       Boolean newForeground, String newForegroundPackage, boolean finish) {
+        return recordSession(day, wallMillis, elapsedMillis, uptimeMillis, newScreenState,
+                newForeground, newForegroundPackage, finish, ZoneId.systemDefault().getId());
+    }
+
+    private UsageUpdate recordSession(LocalDate day, long wallMillis, long elapsedMillis,
+                                      long uptimeMillis, Boolean newScreenState,
+                                      Boolean newForeground, String newForegroundPackage, boolean finish,
+                                      String zoneId) {
         synchronized (STORAGE_FILE_LOCK) {
         if (day == null) return failedUpdate();
+        String accountingZone = zoneId == null ? ZoneId.systemDefault().getId() : zoneId;
         Properties p = read();
         if (storageError) return failedUpdate();
         String profileValue = p.getProperty(SESSION_PROFILE);
         if (profileValue == null) {
-            observeClock(p, wallMillis, elapsedMillis, day);
+            observeClock(p, wallMillis, elapsedMillis, day, accountingZone);
             boolean saved = write(p);
             return new UsageUpdate(0L, new ArrayList<>(), saved, false);
         }
@@ -551,24 +580,23 @@ final class FamilyProfileStore {
         try {
             profile = Profile.valueOf(profileValue);
         } catch (IllegalArgumentException corruptState) {
-            p.setProperty(CLOCK_UNCERTAIN, "true");
+            markClockUncertain(p, ClockIssue.SESSION_UNRECONCILED);
             clearSession(p);
             return new UsageUpdate(0L, new ArrayList<>(), write(p), false);
         }
-        observeClock(p, wallMillis, elapsedMillis, day);
+        boolean clockTrusted = observeClock(p, wallMillis, elapsedMillis, day, accountingZone);
         long previousElapsed = number(p, SESSION_ELAPSED, elapsedMillis);
         long previousUptime = number(p, SESSION_UPTIME, uptimeMillis);
         long previousWall = number(p, SESSION_CURSOR_WALL, wallMillis);
         boolean wasScreenOn = Boolean.parseBoolean(p.getProperty(SESSION_SCREEN_ON, "false"));
         boolean wasForeground = Boolean.parseBoolean(p.getProperty(SESSION_FOREGROUND, "false"));
         boolean diagnostic = Boolean.parseBoolean(p.getProperty(SESSION_DIAGNOSTIC, "false"));
-        if (elapsedMillis < previousElapsed || uptimeMillis < previousUptime) {
-            // A reboot during a running app makes the missing interval unknowable offline.
-            p.setProperty(CLOCK_UNCERTAIN, "true");
+        if (!clockTrusted || elapsedMillis < previousElapsed || uptimeMillis < previousUptime) {
+            // Retain the session when the interval cannot be apportioned safely. Adult recovery can
+            // end it later, but a clock correction or reboot must not erase its persisted cursor.
             p.setProperty(MUST_RETURN_HOME, "true");
-            clearSession(p);
-            write(p);
-            return failedUpdate();
+            boolean saved = write(p);
+            return new UsageUpdate(0L, new ArrayList<>(), saved, diagnostic);
         }
 
         long elapsedDelta = elapsedMillis - previousElapsed;
@@ -577,7 +605,8 @@ final class FamilyProfileStore {
         List<Integer> warnings = new ArrayList<>();
         if (activeDelta > 0L && profile != Profile.ADULT) {
             if (diagnostic) recordDiagnosticUse(p, activeDelta, warnings);
-            else recordAcrossDays(p, profile, previousWall, activeDelta, warnings, ZoneId.systemDefault());
+            else recordAcrossDays(p, profile, activeUsageStartWall(previousWall, wallMillis, activeDelta),
+                    activeDelta, warnings, ZoneId.of(accountingZone));
         }
         p.setProperty(SESSION_DAY, day.toString());
         p.setProperty(SESSION_ELAPSED, Long.toString(elapsedMillis));
@@ -646,49 +675,106 @@ final class FamilyProfileStore {
         }
     }
 
-    /** Clear an interrupted session. If it was active, require an adult to review the clock. */
-    synchronized boolean recoverInterruptedSession(long wallMillis, long elapsedMillis, LocalDate day) {
+    /**
+     * Reconcile a session when launcher is visible again. Same-boot monotonic clocks bound usage;
+     * the uptime delta excludes deep sleep. An untrusted interval is retained for Adult recovery.
+     */
+    synchronized boolean reconcileForLauncher(long wallMillis, long elapsedMillis, long uptimeMillis,
+                                               LocalDate day, String zoneId) {
+        UsageUpdate update = reconcileForLauncherUpdate(wallMillis, elapsedMillis, uptimeMillis, day, zoneId);
+        if (!update.saved || day == null) return false;
+        Snapshot current = snapshot(day);
+        return !storageError && !current.clockUncertain && !current.sessionPending;
+    }
+
+    /** Uses the same persisted accounting path as a normal launcher return. */
+    synchronized UsageUpdate reconcileForLauncherUpdate(long wallMillis, long elapsedMillis, long uptimeMillis,
+                                                        LocalDate day, String zoneId) {
+        synchronized (STORAGE_FILE_LOCK) {
+            boolean hadPendingSession = hasPendingSession();
+            UsageUpdate update = finishSession(day, wallMillis, elapsedMillis, uptimeMillis, zoneId);
+            if (hadPendingSession && update.saved && !hasPendingSession()) markReturnHomeOnWake();
+            return update;
+        }
+    }
+
+    /** Clear an interrupted session only when time is reconcilable or an authenticated Adult opts in. */
+    synchronized boolean recoverInterruptedSession(long wallMillis, long elapsedMillis, long uptimeMillis,
+                                                    LocalDate day, String zoneId, boolean adultAuthenticated) {
         synchronized (STORAGE_FILE_LOCK) {
         if (day == null) return false;
+        UsageUpdate update = reconcileForLauncherUpdate(wallMillis, elapsedMillis, uptimeMillis, day, zoneId);
+        if (!update.saved || storageError) return false;
         Properties p = read();
-        if (storageError) return false;
-        if (p.getProperty(SESSION_PROFILE) != null) {
-            String value = p.getProperty(SESSION_PROFILE);
-            if (!Profile.ADULT.name().equals(value)) {
-                // No monitor was available to reconcile a child/Xbox foreground session.
-                p.setProperty(CLOCK_UNCERTAIN, "true");
-            }
-            p.setProperty(MUST_RETURN_HOME, "true");
-            clearSession(p);
+        if (storageError || p.getProperty(SESSION_PROFILE) == null) return !storageError;
+        if (!adultAuthenticated) return false;
+        if (p.getProperty(CLOCK_UNCERTAIN_REASON) == null) {
+            markClockUncertain(p, ClockIssue.SESSION_UNRECONCILED);
         }
-        observeClock(p, wallMillis, elapsedMillis, day);
+        p.setProperty(MUST_RETURN_HOME, "true");
+        clearSession(p);
+        observeClock(p, wallMillis, elapsedMillis, day, zoneId);
         return write(p);
         }
     }
 
-    private void observeClock(Properties p, long wallMillis, long elapsedMillis, LocalDate day) {
+    private boolean observeClock(Properties p, long wallMillis, long elapsedMillis,
+                                 LocalDate day, String zoneId) {
         long previousWall = number(p, LAST_WALL, -1L);
         long previousElapsed = number(p, LAST_ELAPSED, -1L);
         String previousDay = p.getProperty(LAST_DAY);
+        String previousZone = p.getProperty(LAST_ZONE);
+        ClockIssue issue = ClockIssue.NONE;
         if (previousWall >= 0L) {
-            if (wallMillis < previousWall - CLOCK_TOLERANCE_MS
-                    || (previousDay != null && day.toString().compareTo(previousDay) < 0)) {
-                p.setProperty(CLOCK_UNCERTAIN, "true");
+            if (wallMillis < previousWall - CLOCK_TOLERANCE_MS) {
+                issue = ClockIssue.TIME_ADJUSTED;
             }
             if (previousElapsed >= 0L && elapsedMillis < previousElapsed) {
-                // A reboot resets elapsedRealtime. Without a trusted clock source, require adult review.
-                p.setProperty(CLOCK_UNCERTAIN, "true");
+                issue = ClockIssue.DEVICE_RESTARTED;
             } else if (previousElapsed >= 0L) {
                 long wallDelta = wallMillis - previousWall;
                 long elapsedDelta = elapsedMillis - previousElapsed;
                 if (distance(wallDelta, elapsedDelta) > CLOCK_TOLERANCE_MS) {
-                    p.setProperty(CLOCK_UNCERTAIN, "true");
+                    issue = ClockIssue.TIME_ADJUSTED;
                 }
             }
+            // A local date can move backward after a legitimate zone change. UTC wall/monotonic
+            // comparison above is authoritative for clock edits; a zone-only change is harmless.
+            if (issue == ClockIssue.NONE && previousZone != null && zoneId != null
+                    && previousZone.equals(zoneId) && previousDay != null
+                    && day.toString().compareTo(previousDay) < 0) {
+                issue = ClockIssue.TIME_ADJUSTED;
+            }
         }
+        if (issue != ClockIssue.NONE) markClockUncertain(p, issue);
+        setClockSample(p, wallMillis, elapsedMillis, day, zoneId);
+        return issue == ClockIssue.NONE && !Boolean.parseBoolean(p.getProperty(CLOCK_UNCERTAIN, "false"));
+    }
+
+    private static long activeUsageStartWall(long previousWall, long wallMillis, long activeDelta) {
+        // With missing wake events, uptime bounds awake usage but cannot locate it within a long
+        // suspended interval. Attribute that bounded interval to its end rather than an old day.
+        return Math.max(previousWall, wallMillis - activeDelta);
+    }
+
+    private static void setClockSample(Properties p, long wallMillis, long elapsedMillis,
+                                       LocalDate day, String zoneId) {
         p.setProperty(LAST_WALL, Long.toString(wallMillis));
         p.setProperty(LAST_ELAPSED, Long.toString(elapsedMillis));
         p.setProperty(LAST_DAY, day.toString());
+        if (zoneId != null && zoneId.length() <= 128) p.setProperty(LAST_ZONE, zoneId);
+    }
+
+    private static void markClockUncertain(Properties p, ClockIssue issue) {
+        p.setProperty(CLOCK_UNCERTAIN, "true");
+        if (issue != null && issue != ClockIssue.NONE && p.getProperty(CLOCK_UNCERTAIN_REASON) == null) {
+            p.setProperty(CLOCK_UNCERTAIN_REASON, issue.name());
+        }
+    }
+
+    private static void clearClockIssue(Properties p) {
+        p.setProperty(CLOCK_UNCERTAIN, "false");
+        p.remove(CLOCK_UNCERTAIN_REASON);
     }
 
     private static long remaining(Properties p, Profile profile, LocalDate day) {
@@ -915,8 +1001,11 @@ final class FamilyProfileStore {
         if (childAppsInitialized != (childApps != null)
                 || (childApps != null && !validPackageList(childApps))) return false;
         if (!validOptionalNonnegative(p.getProperty(LAST_WALL))
-                || !validOptionalNonnegative(p.getProperty(LAST_ELAPSED))) return false;
+                || !validOptionalNonnegative(p.getProperty(LAST_ELAPSED))
+                || !validEnum(ClockIssue.class, p.getProperty(CLOCK_UNCERTAIN_REASON))) return false;
         if (p.getProperty(LAST_WALL) != null && p.getProperty(LAST_ELAPSED) == null) return false;
+        String lastZone = p.getProperty(LAST_ZONE);
+        if (lastZone != null && lastZone.length() > 128) return false;
         for (String key : p.stringPropertyNames()) {
             if (key.startsWith("used.") || key.startsWith("extra.")) {
                 if (!validNonnegative(p.getProperty(key))) return false;

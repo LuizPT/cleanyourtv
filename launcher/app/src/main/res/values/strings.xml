@@ -209,7 +209,8 @@
     <string name="family_unlimited" tools:ignore="MissingTranslation">No time limit</string>
     <string name="family_time_label" tools:ignore="MissingTranslation">%1$s used today · %2$s remaining</string>
     <string name="family_time_hours" tools:ignore="MissingTranslation">Allowed from 07:00 to 22:00</string>
-    <string name="family_clock_uncertain" tools:ignore="MissingTranslation">The TV clock or a previous session could not be verified. Child and Xbox launches are paused until an adult reviews the time.</string>
+    <string name="family_clock_uncertain" tools:ignore="MissingTranslation">The TV clock needs adult review. Child and Xbox profiles are paused.</string>
+    <string name="family_clock_review_required" tools:ignore="MissingTranslation">The TV clock still needs adult review.</string>
     <string name="family_clock_confirm" tools:ignore="MissingTranslation">Confirm TV time</string>
     <string name="family_add_time_child" tools:ignore="MissingTranslation">Add time to Child</string>
     <string name="family_add_time_xbox" tools:ignore="MissingTranslation">Add time to Xbox</string>
@@ -230,7 +231,7 @@
     <string name="family_storage_recovery_confirm" tools:ignore="MissingTranslation">Back up and disable Family Edition</string>
     <string name="family_storage_recovered" tools:ignore="MissingTranslation">Family settings were backed up and Family Edition is off. Set it up again when ready.</string>
     <string name="family_monitor_required" tools:ignore="MissingTranslation">App sessions need Android Usage Access. Enable it in Android settings before launching apps from a family profile.</string>
-    <string name="family_session_recovery" tools:ignore="MissingTranslation">A previous session could not be reconciled. Choose Adult and confirm the TV clock before starting another child session.</string>
+    <string name="family_session_recovery" tools:ignore="MissingTranslation">A previous session could not be reconciled. Child and Xbox profiles remain paused until the clock is confirmed.</string>
     <string name="family_usage_access_granted" tools:ignore="MissingTranslation">Usage Access is enabled. It reads app foreground events only, not screen text or passwords.</string>
     <string name="family_usage_access_missing" tools:ignore="MissingTranslation">Usage Access is off. App launches remain blocked until it is enabled.</string>
     <string name="family_usage_access_open" tools:ignore="MissingTranslation">Open Android Usage Access settings</string>

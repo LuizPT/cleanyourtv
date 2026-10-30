@@ -223,10 +223,13 @@ public class FamilyProfileStoreTest {
         FamilyProfileStore state = store();
         assertTrue(state.observeClock(firstWall, 500_000L, day));
         assertFalse(state.observeClock(firstWall + 3 * 60 * 60_000L, 560_000L, day));
+        assertFalse("A later stable sample must not erase an actual clock adjustment",
+                state.reconcileForLauncher(firstWall + 3 * 60 * 60_000L + 60_000L,
+                        620_000L, 620_000L, day, "Europe/Lisbon"));
         assertTrue(store().snapshot(day).clockUncertain);
     }
 
-    @Test public void elapsedRealtimeResetRecoversToLauncherAndRequiresClockReview() {
+    @Test public void elapsedRealtimeResetRetainsSessionForAuthenticatedRecovery() {
         LocalDate day = LocalDate.of(2026, 10, 23);
         long startWall = wall(day, 12, 0);
         FamilyProfileStore state = store();
@@ -236,11 +239,20 @@ public class FamilyProfileStoreTest {
 
         FamilyProfileStore.UsageUpdate update = state.recordSession(day,
                 startWall + 60_000L, 1_000L, 1_000L);
-        assertFalse(update.saved);
+        assertTrue(update.saved);
         FamilyProfileStore.Snapshot recovered = store().snapshot(day);
-        assertFalse(recovered.sessionPending);
+        assertTrue("An ambiguous reboot interval must remain available for review", recovered.sessionPending);
         assertTrue(recovered.clockUncertain);
         assertTrue(recovered.mustReturnHome);
+        assertEquals(0L, recovered.childUsedMs);
+
+        assertTrue("Adult recovery may end, but must not charge, the unknown interval",
+                store().recoverInterruptedSession(startWall + 60_000L, 1_000L, 1_000L,
+                        day, "Europe/Lisbon", true));
+        FamilyProfileStore.Snapshot adultRecovered = store().snapshot(day);
+        assertFalse(adultRecovered.sessionPending);
+        assertTrue(adultRecovered.clockUncertain);
+        assertEquals(0L, adultRecovered.childUsedMs);
     }
 
     @Test public void adultRecoveryKeepsDamagedFamilyFileAndDisablesOnlyFamilyEdition() throws Exception {
@@ -268,20 +280,23 @@ public class FamilyProfileStoreTest {
                 new String(Files.readAllBytes(backup.toPath()), java.nio.charset.StandardCharsets.UTF_8));
     }
 
-    @Test public void interruptedActiveSessionRequiresAdultReviewWithoutChargingScreenOffTime() {
+    @Test public void safeInterruptedSessionReconcilesWithoutAdultAndPreservesPriorUsage() {
         LocalDate day = LocalDate.of(2026, 10, 23);
         long startWall = wall(day, 12, 0);
         FamilyProfileStore state = store();
-        assertTrue(state.startSession(FamilyProfileStore.Profile.XBOX, day,
+        assertTrue(state.startSession(FamilyProfileStore.Profile.XBOX, "vendor.tv.input", day,
                 startWall, 900_000L, 900_000L, true));
         markAppForeground(state, day, startWall, 900_000L);
 
         FamilyProfileStore reopened = store();
-        assertTrue(reopened.recoverInterruptedSession(startWall + 20 * 60_000L, 1_000L, day));
+        assertTrue(reopened.recoverInterruptedSession(startWall + 20 * 60_000L,
+                900_000L + 20 * 60_000L, 900_000L + 2 * 60_000L,
+                day, "Europe/Lisbon", false));
         FamilyProfileStore.Snapshot snapshot = reopened.snapshot(day);
         assertFalse(snapshot.sessionPending);
-        assertTrue(snapshot.clockUncertain);
-        assertEquals(0L, snapshot.xboxUsedMs);
+        assertFalse(snapshot.clockUncertain);
+        assertEquals("Only awake uptime may be charged", 2 * FamilyTimePolicy.MINUTE_MS, snapshot.xboxUsedMs);
+        assertTrue(snapshot.mustReturnHome);
     }
 
     @Test public void xboxSessionCannotBeDuplicatedAndFailedLaunchCanBeRolledBack() {
@@ -463,6 +478,107 @@ public class FamilyProfileStoreTest {
         assertFalse(currentDay.sessionPending);
     }
 
+    @Test public void overnightResumeWithoutScreenEventsReconcilesOnlyAwakeTimeToNewDay() {
+        LocalDate previousDay = LocalDate.of(2026, 10, 23);
+        LocalDate resumedDay = previousDay.plusDays(1);
+        long startWall = wall(previousDay, 22, 57);
+        long startElapsed = 5_000_000L;
+        long startUptime = 4_200_000L;
+        FamilyProfileStore state = store();
+        assertTrue(state.startSession(FamilyProfileStore.Profile.CHILD_TV, "video.app", previousDay,
+                startWall, startElapsed, startUptime, true));
+        assertTrue(state.setSessionForeground(true, "video.app", previousDay,
+                startWall, startElapsed, startUptime).saved);
+
+        long lastTickWall = wall(previousDay, 23, 0);
+        long lastTickElapsed = startElapsed + 3 * FamilyTimePolicy.MINUTE_MS;
+        long lastTickUptime = startUptime + 3 * FamilyTimePolicy.MINUTE_MS;
+        assertTrue(state.recordSession(previousDay, lastTickWall, lastTickElapsed, lastTickUptime).saved);
+
+        long resumedWall = wall(resumedDay, 14, 0);
+        long resumedElapsed = lastTickElapsed + resumedWall - lastTickWall;
+        long resumedUptime = lastTickUptime + 2 * FamilyTimePolicy.MINUTE_MS;
+        assertTrue("A missed SCREEN_OFF/SCREEN_ON pair is recoverable on the same boot",
+                state.reconcileForLauncher(resumedWall, resumedElapsed, resumedUptime,
+                        resumedDay, "Europe/Lisbon"));
+
+        FamilyProfileStore.Snapshot previous = store().snapshot(previousDay);
+        FamilyProfileStore.Snapshot current = store().snapshot(resumedDay);
+        assertEquals("Earlier usage is preserved", 3 * FamilyTimePolicy.MINUTE_MS, previous.childUsedMs);
+        assertEquals("Deep sleep is excluded and awake tail belongs to the resumed day",
+                2 * FamilyTimePolicy.MINUTE_MS, current.childUsedMs);
+        assertEquals(0L, current.xboxUsedMs);
+        assertEquals(0L, current.childExtensionMs);
+        assertFalse(current.clockUncertain);
+        assertFalse(current.sessionPending);
+        assertTrue(current.mustReturnHome);
+    }
+
+    @Test public void missingScreenOnEventDoesNotChargeSuspensionOrLeaveSessionPending() {
+        LocalDate previousDay = LocalDate.of(2026, 10, 23);
+        LocalDate resumedDay = previousDay.plusDays(1);
+        long startWall = wall(previousDay, 22, 57);
+        long startElapsed = 5_000_000L;
+        long startUptime = 5_000_000L;
+        FamilyProfileStore state = store();
+        assertTrue(state.startSession(FamilyProfileStore.Profile.XBOX, "vendor.tv.input", previousDay,
+                startWall, startElapsed, startUptime, true));
+        assertTrue(state.setSessionForeground(true, "vendor.tv.input", previousDay,
+                startWall, startElapsed, startUptime).saved);
+        long offWall = wall(previousDay, 23, 0);
+        long offElapsed = startElapsed + 3 * FamilyTimePolicy.MINUTE_MS;
+        long offUptime = startUptime + 3 * FamilyTimePolicy.MINUTE_MS;
+        assertTrue(state.setSessionScreenOn(false, previousDay, offWall, offElapsed, offUptime).saved);
+
+        long resumedWall = wall(resumedDay, 14, 0);
+        long resumedElapsed = offElapsed + resumedWall - offWall;
+        assertTrue(state.reconcileForLauncher(resumedWall, resumedElapsed, offUptime,
+                resumedDay, "Europe/Lisbon"));
+        FamilyProfileStore.Snapshot current = store().snapshot(resumedDay);
+        assertEquals(0L, current.xboxUsedMs);
+        assertFalse(current.clockUncertain);
+        assertFalse(current.sessionPending);
+    }
+
+    @Test public void ambiguousLegacyV22ClockFlagIsNotAutomaticallyCleared() throws Exception {
+        LocalDate day = LocalDate.of(2026, 10, 23);
+        long wallNow = wall(day, 14, 0);
+        long elapsedNow = 50_000_000L;
+        File file = new File(folder.getRoot(), "family-profiles.properties");
+        String oldV22State = "family_enabled=true\n"
+                + "clock_uncertain=true\n"
+                + "must_return_home=true\n"
+                + "last_wall_ms=" + (wallNow - 60 * 60_000L) + "\n"
+                + "last_elapsed_ms=" + (elapsedNow - 60 * 60_000L) + "\n"
+                + "last_day=" + day + "\n";
+        try (FileOutputStream output = new FileOutputStream(file)) {
+            output.write(oldV22State.getBytes(java.nio.charset.StandardCharsets.UTF_8));
+        }
+        FamilyProfileStore legacy = new FamilyProfileStore(file);
+        assertFalse(legacy.hasStorageError());
+        assertFalse("An old flag without a recorded cause is ambiguous and stays fail-closed",
+                legacy.reconcileForLauncher(wallNow, elapsedNow, elapsedNow - 5_000_000L,
+                        day, "Europe/Lisbon"));
+        assertTrue(store().snapshot(day).clockUncertain);
+        assertEquals(0L, store().snapshot(day).childUsedMs);
+    }
+
+    @Test public void timezoneChangeMayMoveLocalDateBackwardWithoutClockUncertainty() {
+        LocalDate lisbonDay = LocalDate.of(2026, 10, 23);
+        long firstWall = lisbonDay.atTime(0, 30).atZone(ZoneId.of("Europe/Lisbon"))
+                .toInstant().toEpochMilli();
+        long firstElapsed = 10_000_000L;
+        FamilyProfileStore state = store();
+        assertTrue(state.observeClock(firstWall, firstElapsed, lisbonDay, "Europe/Lisbon"));
+        ZoneId newZone = ZoneId.of("America/New_York");
+        long nextWall = firstWall + 5 * FamilyTimePolicy.MINUTE_MS;
+        LocalDate localDayAfterZoneChange = java.time.Instant.ofEpochMilli(nextWall)
+                .atZone(newZone).toLocalDate();
+        assertTrue(state.observeClock(nextWall, firstElapsed + 5 * FamilyTimePolicy.MINUTE_MS,
+                localDayAfterZoneChange, newZone.getId()));
+        assertFalse(store().snapshot(localDayAfterZoneChange).clockUncertain);
+    }
+
     @Test public void dailyUsageSplitsUsingCurrentSystemTimeZoneWithoutDuplicatingMinutes() {
         TimeZone originalZone = TimeZone.getDefault();
         try {
@@ -589,11 +705,12 @@ public class FamilyProfileStoreTest {
 
         FamilyProfileStore reopened = store();
         assertTrue(reopened.recoverInterruptedSession(wall + 3 * FamilyTimePolicy.MINUTE_MS,
-                elapsed + 3 * FamilyTimePolicy.MINUTE_MS, day));
+                elapsed + 3 * FamilyTimePolicy.MINUTE_MS, elapsed + 3 * FamilyTimePolicy.MINUTE_MS,
+                day, "Europe/Lisbon", false));
         FamilyProfileStore.Snapshot recovered = store().snapshot(day);
         assertFalse(recovered.sessionPending);
         assertFalse(recovered.sessionDiagnostic);
-        assertTrue(recovered.clockUncertain);
+        assertFalse(recovered.clockUncertain);
         assertTrue(recovered.mustReturnHome);
         assertEquals(0L, recovered.xboxUsedMs);
         assertEquals(0L, recovered.xboxExtensionMs);

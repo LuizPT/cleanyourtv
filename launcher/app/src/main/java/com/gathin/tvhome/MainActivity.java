@@ -281,9 +281,10 @@ public class MainActivity extends Activity implements AppAdapter.TileListener {
         Config cfg = Config.load(this);
         launcherState = new LauncherState(new File(getFilesDir(), "launcher-state.properties"));
         familyStore = new FamilyProfileStore(new File(getFilesDir(), "family-profiles.properties"));
-        if (familyStore.hasPendingSession() && !FamilyUsageAccess.isGranted(this)) {
-            familyStore.recoverInterruptedSession(System.currentTimeMillis(), SystemClock.elapsedRealtime(), familyToday());
-        } else if (familyStore.hasPendingSession() && familyStore.isEnabled()) {
+        if (familyStore.hasPendingSession()) {
+            reconcileFamilyForLauncher();
+        }
+        if (familyStore.hasPendingSession() && familyStore.isEnabled() && FamilyUsageAccess.isGranted(this)) {
             startFamilySessionMonitor();
         }
         registerFamilyScreenReceiver();
@@ -536,7 +537,7 @@ public class MainActivity extends Activity implements AppAdapter.TileListener {
         updateGreeting();
         updateWifiLabel();
         updateInputsButton();
-        observeFamilyClockNow();
+        reconcileFamilyForLauncher();
         refreshFamilyProfileAccess(true);
         updateFamilyStatus();
         refreshFamilyProfileSelectorViews();
@@ -2158,7 +2159,20 @@ public class MainActivity extends Activity implements AppAdapter.TileListener {
     private FamilyProfileStore.Snapshot observeFamilyClockNow() {
         if (familyStore == null) return null;
         ZonedDateTime now = familyNow();
-        familyStore.observeClock(now.toInstant().toEpochMilli(), SystemClock.elapsedRealtime(), now.toLocalDate());
+        familyStore.observeClock(now.toInstant().toEpochMilli(), SystemClock.elapsedRealtime(),
+                now.toLocalDate(), ZoneId.systemDefault().getId());
+        return familyStore.snapshot(now.toLocalDate());
+    }
+
+    /** Reconciles only intervals whose wall and monotonic clocks agree; never authenticates here. */
+    private FamilyProfileStore.Snapshot reconcileFamilyForLauncher() {
+        if (familyStore == null) return null;
+        ZonedDateTime now = familyNow();
+        boolean hadSession = familyStore.hasPendingSession();
+        FamilyProfileStore.UsageUpdate update = familyStore.reconcileForLauncherUpdate(
+                now.toInstant().toEpochMilli(), SystemClock.elapsedRealtime(), SystemClock.uptimeMillis(),
+                now.toLocalDate(), ZoneId.systemDefault().getId());
+        if (hadSession) handleFamilyUsageUpdate(update);
         return familyStore.snapshot(now.toLocalDate());
     }
 
@@ -2180,7 +2194,7 @@ public class MainActivity extends Activity implements AppAdapter.TileListener {
 
     private void refreshFamilySelectorForResume() {
         if (familyStore == null || !familyEnabled()) return;
-        observeFamilyClockNow();
+        reconcileFamilyForLauncher();
         refreshFamilyProfileAccess(true);
         refreshFamilyProfileSelectorViews();
         if (activeFamilyProfile == null) maybeShowFamilyProfileSelector();
@@ -2310,7 +2324,8 @@ public class MainActivity extends Activity implements AppAdapter.TileListener {
         }
         ZonedDateTime now = familyNow();
         LocalDate day = now.toLocalDate();
-        familyStore.observeClock(now.toInstant().toEpochMilli(), SystemClock.elapsedRealtime(), day);
+        familyStore.observeClock(now.toInstant().toEpochMilli(), SystemClock.elapsedRealtime(),
+                day, ZoneId.systemDefault().getId());
         if (familyStore.hasStorageError()) {
             Toast.makeText(this, R.string.family_storage_error, Toast.LENGTH_LONG).show();
             return false;
@@ -2418,8 +2433,9 @@ public class MainActivity extends Activity implements AppAdapter.TileListener {
     private void finishFamilyUsageSession() {
         if (familyStore != null && familyStore.hasPendingSession()) {
             ZonedDateTime now = familyNow();
-            FamilyProfileStore.UsageUpdate update = familyStore.finishSession(now.toLocalDate(),
-                    now.toInstant().toEpochMilli(), SystemClock.elapsedRealtime(), SystemClock.uptimeMillis());
+            FamilyProfileStore.UsageUpdate update = familyStore.reconcileForLauncherUpdate(
+                    now.toInstant().toEpochMilli(), SystemClock.elapsedRealtime(), SystemClock.uptimeMillis(),
+                    now.toLocalDate(), ZoneId.systemDefault().getId());
             handleFamilyUsageUpdate(update);
             trackedFamilyProfile = null;
             stopService(new Intent(this, FamilySessionMonitorService.class));
@@ -2465,7 +2481,8 @@ public class MainActivity extends Activity implements AppAdapter.TileListener {
         if (!familyEnabled() || activeFamilyProfile == null || activeFamilyProfile == FamilyTimePolicy.Profile.ADULT) return;
         ZonedDateTime now = familyNow();
         LocalDate day = now.toLocalDate();
-        familyStore.observeClock(now.toInstant().toEpochMilli(), SystemClock.elapsedRealtime(), day);
+        familyStore.observeClock(now.toInstant().toEpochMilli(), SystemClock.elapsedRealtime(),
+                day, ZoneId.systemDefault().getId());
         if (familyStore.hasStorageError()) {
             setActiveFamilyProfile(null);
             if (notify) Toast.makeText(this, R.string.family_storage_error, Toast.LENGTH_LONG).show();
@@ -2588,7 +2605,8 @@ public class MainActivity extends Activity implements AppAdapter.TileListener {
         if (!childAppsWereInitialized && adapter != null) reloadApps(false);
         LocalDate today = familyToday();
         ZonedDateTime currentTime = familyNow();
-        familyStore.observeClock(currentTime.toInstant().toEpochMilli(), SystemClock.elapsedRealtime(), today);
+        familyStore.observeClock(currentTime.toInstant().toEpochMilli(), SystemClock.elapsedRealtime(),
+                today, ZoneId.systemDefault().getId());
         if (familyStore.hasStorageError()) {
             familySelectorShowing = false;
             Toast.makeText(this, R.string.family_storage_error, Toast.LENGTH_LONG).show();
@@ -2934,26 +2952,18 @@ public class MainActivity extends Activity implements AppAdapter.TileListener {
 
     private void refreshFamilyProfilesManually() {
         if (!familyEnabled()) return;
-        FamilyProfileStore.Snapshot snapshot = observeFamilyClockNow();
+        FamilyProfileStore.Snapshot snapshot = reconcileFamilyForLauncher();
         if (familyStore.hasStorageError() || snapshot == null) {
             Toast.makeText(this, R.string.family_storage_error, Toast.LENGTH_LONG).show();
             return;
         }
         refreshFamilyProfileSelectorViews();
+        updateFamilyStatus();
         if (snapshot.clockUncertain || snapshot.sessionPending) {
-            authenticateAdultAction(R.string.family_clock_confirm, R.string.family_adult_auth_subtitle, () -> {
-                FamilyProfileStore.Snapshot verified = familyStore.snapshot(familyToday());
-                if (verified.sessionPending) {
-                    // Keep the unknown session intact. Adult profile selection performs the existing recovery path.
-                    refreshFamilyProfileSelectorViews();
-                    Toast.makeText(this, R.string.family_session_recovery, Toast.LENGTH_LONG).show();
-                    return;
-                }
-                showFamilyClockConfirmationDialog();
-            });
-            return;
+            Toast.makeText(this, R.string.family_clock_review_required, Toast.LENGTH_SHORT).show();
+        } else {
+            Toast.makeText(this, R.string.family_updated, Toast.LENGTH_SHORT).show();
         }
-        Toast.makeText(this, R.string.family_updated, Toast.LENGTH_SHORT).show();
         if (familySelectorRefreshButton != null) familySelectorRefreshButton.requestFocus();
     }
 
@@ -2977,7 +2987,8 @@ public class MainActivity extends Activity implements AppAdapter.TileListener {
             }
             ZonedDateTime confirmedNow = familyNow();
             if (!familyStore.confirmClock(confirmedNow.toInstant().toEpochMilli(),
-                    SystemClock.elapsedRealtime(), confirmedNow.toLocalDate())) {
+                    SystemClock.elapsedRealtime(), confirmedNow.toLocalDate(),
+                    ZoneId.systemDefault().getId())) {
                 Toast.makeText(this, R.string.family_storage_error, Toast.LENGTH_LONG).show();
                 return;
             }
@@ -3171,7 +3182,8 @@ public class MainActivity extends Activity implements AppAdapter.TileListener {
             if (familyStore.hasPendingSession()) {
                 ZonedDateTime now = familyNow();
                 if (!familyStore.recoverInterruptedSession(now.toInstant().toEpochMilli(),
-                        SystemClock.elapsedRealtime(), now.toLocalDate())) {
+                        SystemClock.elapsedRealtime(), SystemClock.uptimeMillis(), now.toLocalDate(),
+                        ZoneId.systemDefault().getId(), true)) {
                     Toast.makeText(this, R.string.family_storage_error, Toast.LENGTH_LONG).show();
                     return;
                 }
@@ -3201,7 +3213,8 @@ public class MainActivity extends Activity implements AppAdapter.TileListener {
             return;
         }
         ZonedDateTime currentTime = familyNow();
-        familyStore.observeClock(currentTime.toInstant().toEpochMilli(), SystemClock.elapsedRealtime(), today);
+        familyStore.observeClock(currentTime.toInstant().toEpochMilli(), SystemClock.elapsedRealtime(),
+                today, ZoneId.systemDefault().getId());
         if (familyStore.hasStorageError()) {
             Toast.makeText(this, R.string.family_storage_error, Toast.LENGTH_LONG).show();
             return;
@@ -3358,7 +3371,8 @@ public class MainActivity extends Activity implements AppAdapter.TileListener {
         }
         LocalDate today = familyToday();
         ZonedDateTime now = familyNow();
-        familyStore.observeClock(now.toInstant().toEpochMilli(), SystemClock.elapsedRealtime(), today);
+        familyStore.observeClock(now.toInstant().toEpochMilli(), SystemClock.elapsedRealtime(),
+                today, ZoneId.systemDefault().getId());
         FamilyProfileStore.Snapshot snapshot = familyStore.snapshot(today);
         if (familyStore.hasStorageError()) {
             Toast.makeText(this, R.string.family_storage_error, Toast.LENGTH_LONG).show();
@@ -3751,7 +3765,8 @@ public class MainActivity extends Activity implements AppAdapter.TileListener {
             }
             ZonedDateTime verifiedNow = familyNow();
             if (!familyStore.confirmClock(verifiedNow.toInstant().toEpochMilli(),
-                    SystemClock.elapsedRealtime(), verifiedNow.toLocalDate())) {
+                    SystemClock.elapsedRealtime(), verifiedNow.toLocalDate(),
+                    ZoneId.systemDefault().getId())) {
                 Toast.makeText(this, R.string.family_storage_error, Toast.LENGTH_LONG).show();
                 return;
             }
@@ -3791,7 +3806,8 @@ public class MainActivity extends Activity implements AppAdapter.TileListener {
     private void showFamilyMonitoringDetail() {
         LocalDate today = familyToday();
         ZonedDateTime now = familyNow();
-        familyStore.observeClock(now.toInstant().toEpochMilli(), SystemClock.elapsedRealtime(), today);
+        familyStore.observeClock(now.toInstant().toEpochMilli(), SystemClock.elapsedRealtime(),
+                today, ZoneId.systemDefault().getId());
         FamilyProfileStore.Snapshot snapshot = familyStore.snapshot(today);
         boolean usageAccess = FamilyUsageAccess.isGranted(this);
         String status = familyReliabilityStatus(snapshot, usageAccess);
@@ -3884,7 +3900,8 @@ public class MainActivity extends Activity implements AppAdapter.TileListener {
                             }
                             ZonedDateTime confirmedNow = familyNow();
                             if (familyStore.confirmClock(confirmedNow.toInstant().toEpochMilli(),
-                                    SystemClock.elapsedRealtime(), confirmedNow.toLocalDate())) {
+                                    SystemClock.elapsedRealtime(), confirmedNow.toLocalDate(),
+                                    ZoneId.systemDefault().getId())) {
                                 dialog.dismiss();
                                 setActiveFamilyProfile(null);
                                 showFamilyManagementPanel();

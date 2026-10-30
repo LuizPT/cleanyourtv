@@ -1,12 +1,12 @@
 # CleanYourTV — Edição Família
 
-Edição experimental 2.8 no ramo `feature/family-profiles`, derivada da CleanYourTV Custom Edition 2.4. Esta versão usa `versionCode` 9 para permitir atualização das versões experimentais anteriores. Está a ser preparada para Android TV 9 e não substitui nem altera o ramo estável `custom-2.4`.
+Edição experimental 2.9 no ramo `feature/family-profiles`, derivada da CleanYourTV Custom Edition 2.4. Esta versão usa `versionCode` 24 para permitir atualização das versões experimentais anteriores. Está a ser preparada para Android TV 9 e não substitui nem altera o ramo estável `custom-2.4`.
 
 ## Perfis e limites
 
 | Perfil | Acesso | Horário | Limite diário |
 | --- | --- | --- | --- |
-| Adulto | Sequência secreta de 10–16 movimentos do comando | Sem restrição | Ilimitado |
+| Adulto | Sequência secreta de 4–10 movimentos do comando | Sem restrição | Ilimitado |
 | Criança (TV) | Seleção no launcher | 07:00–22:00, hora de Lisboa | 60 minutos |
 | Xbox (HDMI) | Entrada HDMI escolhida pelo adulto | 07:00–22:00, hora de Lisboa | 60 minutos nos dias úteis; 120 minutos ao fim de semana |
 
@@ -14,7 +14,7 @@ O controlo começa desativado e só é ativado por um adulto autenticado. Não e
 
 Os horários avançados são opcionais e independentes para Criança e Xbox. Sem alterações, mantêm-se 07:00–22:00 e os limites existentes (60 minutos para Criança; 60 minutos úteis e 120 minutos ao fim de semana para Xbox). As janelas são do mesmo dia; não são aceites horários que atravessem a meia-noite. Cada dia pode ser reposto individualmente à predefinição.
 
-As estatísticas são locais, mantêm Criança e Xbox em colunas/valores separados e mostram os últimos sete dias, incluindo o dia atual. Apenas contam intervalos registados como ecrã ligado e aplicação em primeiro plano. A suspensão normal é excluída pelo estado de ecrã e pelos relógios monotónicos. Se o processo for terminado enquanto o dispositivo continua ligado, o estado persistido pode levar a contabilizar conservadoramente o intervalo desde a última amostra; eventos entretanto ocorridos podem causar uma pequena sobrecontagem. Se o dispositivo reiniciar, o relógio monotónico deixa de ser contínuo: a sessão é encerrada sem cobrar esse intervalo desconhecido, o acesso infantil fica suspenso e o Adulto tem de rever o relógio antes de retomar. Os perfis não partilham nem duplicam saldos.
+As estatísticas são locais, mantêm Criança e Xbox em colunas/valores separados e mostram os últimos sete dias, incluindo o dia atual. Apenas contam intervalos registados como ecrã ligado e aplicação em primeiro plano. A suspensão normal é excluída pelo estado de ecrã e pelos relógios monotónicos. Se o processo for terminado enquanto o dispositivo continua ligado, o estado persistido pode levar a contabilizar conservadoramente o intervalo desde a última amostra; eventos entretanto ocorridos podem causar uma pequena sobrecontagem. Se o dispositivo reiniciar, o relógio monotónico deixa de ser contínuo: a sessão desconhecida fica pendente sem ser cobrada, o acesso infantil fica suspenso e o Adulto tem de rever o relógio antes de retomar. Os perfis não partilham nem duplicam saldos.
 
 ## Aplicações do perfil Criança
 
@@ -40,6 +40,12 @@ A duração mede apenas o tempo que o monitor observa a aplicação em primeiro 
 
 O estado de gestão distingue funcionalidade desligada, falta de Usage Access, dados ilegíveis, necessidade de rever o relógio e estado pronto. “Pronta” significa que a monitorização está preparada para lançamentos originados neste launcher; não significa bloqueio do Android inteiro nem controlo da entrada HDMI.
 
+## Atualização após suspensão (v24)
+
+O regresso ao launcher, o despertar e o botão **Atualizar** usam o mesmo caminho de contabilização. Atualizar não pede a sequência do Adulto. Quando os relógios de parede e monotónico concordam, o estado pendente é fechado automaticamente; a utilização é limitada pelo avanço de `elapsedRealtime()` e `uptimeMillis()`, pelo estado persistido de ecrã ligado e pela aplicação em primeiro plano. Assim, numa suspensão das 23:00 às 14:00, o período de suspensão não é cobrado e o saldo do novo dia é consultado sem alterar o histórico do dia anterior. Se não chegaram eventos de ecrã, o tempo acordado recuperável é atribuído ao fim do intervalo e ao dia atual, porque o Android não fornece informação suficiente para reconstruir o instante exato de cada utilização nesse período.
+
+Uma alteração real ou ambígua do relógio, ou a reinicialização do dispositivo durante uma sessão, mantém a sessão pendente e Criança/Xbox pausados. **Atualizar** mostra um aviso curto, não autentica nem apaga dados; o Adulto tem de entrar no perfil e rever a hora. Os estados persistidos pela v22 não guardam a causa da incerteza, por isso uma instalação que já tenha esse indicador ativo não pode distingui-lo com segurança de uma alteração real do relógio e pode exigir esta revisão uma vez. Esta salvaguarda evita repor saldos ou horários com uma hora que não possa ser confirmada.
+
 ## Abertura da entrada Xbox
 
 Ao escolher o perfil Xbox, a CleanYourTV valida a configuração e envia imediatamente uma intent `ACTION_VIEW` com a URI de passthrough criada por `TvContract.buildChannelUriForPassthroughInput()`. Não abre novamente o seletor de entradas. Se a intent padrão não tiver destino, pode tentar a ação `input_action` configurada para o fabricante, mantendo a mesma URI e a mesma entrada autorizada. A sessão e o monitor são iniciados antes do envio; uma falha síncrona de lançamento limpa a sessão pendente. Uma sessão já pendente impede outro início.
@@ -58,7 +64,7 @@ No Android 8.0/API 26 ou posterior, `TYPE_APPLICATION_OVERLAY` fica acima das ja
 
 Quando o tempo acaba ou começa o período não permitido, o launcher tenta regressar ao Home. Android 9 não permite que uma aplicação comum force o fecho de outra aplicação. Se a firmware não aceitar o regresso automático, o vídeo pode continuar visível enquanto a sessão permanece pendente. Se o Android não confirmar o destino em 30 segundos, se o acesso for revogado ou se ocorrer um erro de armazenamento, a aplicação tenta regressar ao Home e bloqueia novos lançamentos pelo launcher até recuperação adulta.
 
-Após reinício ou suspensão, o perfil Adulto não é restaurado automaticamente: é pedida nova seleção e o Adulto tem de introduzir a sequência. Se uma sessão tiver ficado sem estado fiável, Criança/Xbox ficam suspensos até o adulto autenticar e rever a hora. Os dados já contabilizados não são removidos; um período em que o processo não conseguiu observar eventos pode ficar por contabilizar e não é estimado como tempo usado. A gestão familiar guarda estado no ficheiro privado da aplicação. Se o ficheiro familiar ficar ilegível, a gestão autenticada pela sequência pode guardar uma cópia privada e desativar apenas a Edição Família; as credenciais e as restantes definições do launcher permanecem intactas, e o adulto pode configurar a Edição Família novamente.
+Após reinício ou suspensão, o perfil Adulto não é restaurado automaticamente: é pedida nova seleção e o Adulto tem de introduzir a sequência. Se uma sessão tiver ficado sem estado fiável, Criança/Xbox ficam suspensos até o Adulto autenticar e rever a hora. Os dados já contabilizados não são removidos; um período em que o processo não conseguiu observar eventos pode ficar por contabilizar e não é estimado como tempo usado. A gestão familiar guarda estado no ficheiro privado da aplicação. Se o ficheiro familiar ficar ilegível, a gestão autenticada pela sequência pode guardar uma cópia privada e desativar apenas a Edição Família; as credenciais e as restantes definições do launcher permanecem intactas, e o Adulto pode configurar a Edição Família novamente.
 
 ## Limites do controlo
 
@@ -70,7 +76,7 @@ O perfil Xbox acompanha apenas uma sessão iniciada pelo atalho do launcher. `Tv
 
 Antes de confiar nos limites, testar na Xiaomi Mi TV 4S com firmware PI.4663:
 
-1. Se a instalação já tiver um PIN 2.4, introduzi-lo uma vez na migração; depois definir e confirmar uma sequência de 10–16 movimentos.
+1. Se a instalação já tiver um PIN 2.4, introduzi-lo uma vez na migração; depois definir e confirmar uma sequência de 4–10 movimentos.
 2. Conceder Usage Access nas Definições Android e ativar a Edição Família com a sequência do adulto.
 3. Iniciar uma aplicação pelo launcher em Criança e confirmar que o tempo é contado e que o Home aparece ao chegar ao limite.
 4. Testar regresso com Voltar, botão Home, suspensão/retoma, reinício, revogação do Usage Access e mudança de hora.

@@ -175,6 +175,8 @@ public final class FamilyProfileUiTest {
         assertTrue("Manual refresh must update the existing selector in place",
                 originalSelector == refreshedSelector && refreshedSelector.isShowing());
         assertFocusedView(R.id.familyProfileRefresh, "Refresh should retain D-pad focus");
+        assertNull("Refresh must not open the Adult sequence prompt",
+                activity.findViewById(R.id.familyAdultAuthPanel));
         FamilyProfileStore.Snapshot after = store.snapshot(today);
         assertEquals(before.childUsedMs, after.childUsedMs);
         assertEquals(before.xboxUsedMs, after.xboxUsedMs);
@@ -188,7 +190,7 @@ public final class FamilyProfileUiTest {
         assertEquals(before.xboxSchedule.budgetMs, after.xboxSchedule.budgetMs);
     }
 
-    @Test public void uncertainClockRefreshRequiresAdultSequenceAndExplicitConfirmation() throws Exception {
+    @Test public void uncertainClockRefreshStaysUnauthenticatedAndKeepsFailClosedState() throws Exception {
         launchMainActivity();
         awaitVisibleText(getString(R.string.family_select_profile));
         Dialog originalSelector = field(activity, "familySelectorDialog", Dialog.class);
@@ -212,27 +214,48 @@ public final class FamilyProfileUiTest {
 
         FamilyProfileStore.Snapshot before = store.snapshot(today);
         clickView(R.id.familyProfileRefresh);
-        awaitVisibleText(getString(R.string.family_adult_auth_subtitle));
-        enterSequence("UDLRUDLRUU");
-        InstrumentationRegistry.getInstrumentation().sendKeyDownUpSync(KeyEvent.KEYCODE_DPAD_CENTER);
         InstrumentationRegistry.getInstrumentation().waitForIdleSync();
-        assertTrue("An incorrect sequence must not clear clock uncertainty",
-                store.snapshot(today).clockUncertain);
-
-        enterSequence("UDLRUDLRUD");
-        InstrumentationRegistry.getInstrumentation().sendKeyDownUpSync(KeyEvent.KEYCODE_DPAD_CENTER);
-        awaitViewById(R.id.familyClockConfirm);
-        assertTrue("Clock confirmation must keep the selector in place",
-                originalSelector == field(activity, "familySelectorDialog", Dialog.class));
-        clickView(R.id.familyClockConfirm);
-        InstrumentationRegistry.getInstrumentation().waitForIdleSync();
+        assertNull("Refresh never opens Adult authentication", activity.findViewById(R.id.familyAdultAuthPanel));
+        assertNull("Refresh never opens clock confirmation", activity.findViewById(R.id.familyClockConfirm));
+        assertTrue("The original selector stays open", originalSelector.isShowing());
+        assertTrue("Refresh keeps D-pad focus on its button",
+                originalSelector.findViewById(R.id.familyProfileRefresh).hasFocus());
         FamilyProfileStore.Snapshot after = store.snapshot(today);
-        assertFalse("Only authenticated confirmation should clear the uncertainty flag", after.clockUncertain);
+        assertTrue("An ambiguous clock adjustment remains fail-closed", after.clockUncertain);
         assertEquals(before.childUsedMs, after.childUsedMs);
         assertEquals(before.xboxUsedMs, after.xboxUsedMs);
         assertEquals(before.childExtensionMs, after.childExtensionMs);
         assertEquals(before.xboxExtensionMs, after.xboxExtensionMs);
+    }
+
+    @Test public void manualRefreshReconcilesSafePendingSessionWithoutAuthentication() throws Exception {
+        launchMainActivity();
+        awaitVisibleText(getString(R.string.family_select_profile));
+        Dialog originalSelector = field(activity, "familySelectorDialog", Dialog.class);
+        FamilyProfileStore store = new FamilyProfileStore(familyFile);
+        ZonedDateTime now = ZonedDateTime.now(ZoneId.systemDefault());
+        long wall = now.toInstant().toEpochMilli();
+        long elapsed = SystemClock.elapsedRealtime();
+        long uptime = SystemClock.uptimeMillis();
+        LocalDate today = now.toLocalDate();
+        assertTrue(store.startSession(FamilyProfileStore.Profile.CHILD_TV, "test.child.video", today,
+                wall, elapsed, uptime, true));
+        assertTrue(store.setSessionForeground(true, "test.child.video", today,
+                wall, elapsed, uptime).saved);
+
+        InstrumentationRegistry.getInstrumentation().runOnMainSync(() ->
+                originalSelector.findViewById(R.id.familyProfileRefresh).requestFocus());
+        clickView(R.id.familyProfileRefresh);
+        InstrumentationRegistry.getInstrumentation().waitForIdleSync();
+
+        FamilyProfileStore.Snapshot after = store.snapshot(today);
+        assertFalse("A same-boot session is reconciled in place", after.sessionPending);
+        assertFalse(after.clockUncertain);
+        assertTrue(originalSelector == field(activity, "familySelectorDialog", Dialog.class));
         assertTrue(originalSelector.isShowing());
+        assertTrue(originalSelector.findViewById(R.id.familyProfileRefresh).hasFocus());
+        assertNull("A recoverable refresh does not ask for the Adult sequence",
+                activity.findViewById(R.id.familyAdultAuthPanel));
     }
 
     @Test public void childCanExitToSelectorButHomeKeepsChildProfileActive() throws Exception {
