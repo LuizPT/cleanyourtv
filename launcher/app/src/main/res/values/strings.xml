@@ -209,8 +209,9 @@
     <string name="family_unlimited" tools:ignore="MissingTranslation">No time limit</string>
     <string name="family_time_label" tools:ignore="MissingTranslation">%1$s used today · %2$s remaining</string>
     <string name="family_time_hours" tools:ignore="MissingTranslation">Allowed from 07:00 to 22:00</string>
-    <string name="family_clock_uncertain" tools:ignore="MissingTranslation">The TV clock needs adult review. Child and Xbox profiles are paused.</string>
-    <string name="family_clock_review_required" tools:ignore="MissingTranslation">The TV clock still needs adult review.</string>
+    <string name="family_clock_uncertain" tools:ignore="MissingTranslation">Automatic time is off or the clock needs adult confirmation. Child and Xbox are paused.</string>
+    <string name="family_clock_review_required" tools:ignore="MissingTranslation">The TV clock is being checked. Profiles refresh automatically when it is stable.</string>
+    <string name="family_clock_legacy_wait" tools:ignore="MissingTranslation">Older clock data is being migrated. Profiles resume after a verified day change.</string>
     <string name="family_clock_confirm" tools:ignore="MissingTranslation">Confirm TV time</string>
     <string name="family_add_time_child" tools:ignore="MissingTranslation">Add time to Child</string>
     <string name="family_add_time_xbox" tools:ignore="MissingTranslation">Add time to Xbox</string>
@@ -231,7 +232,7 @@
     <string name="family_storage_recovery_confirm" tools:ignore="MissingTranslation">Back up and disable Family Edition</string>
     <string name="family_storage_recovered" tools:ignore="MissingTranslation">Family settings were backed up and Family Edition is off. Set it up again when ready.</string>
     <string name="family_monitor_required" tools:ignore="MissingTranslation">App sessions need Android Usage Access. Enable it in Android settings before launching apps from a family profile.</string>
-    <string name="family_session_recovery" tools:ignore="MissingTranslation">A previous session could not be reconciled. Child and Xbox profiles remain paused until the clock is confirmed.</string>
+    <string name="family_session_recovery" tools:ignore="MissingTranslation">A previous session could not be timed safely. Adult review is required; saved usage is preserved.</string>
     <string name="family_usage_access_granted" tools:ignore="MissingTranslation">Usage Access is enabled. It reads app foreground events only, not screen text or passwords.</string>
     <string name="family_usage_access_missing" tools:ignore="MissingTranslation">Usage Access is off. App launches remain blocked until it is enabled.</string>
     <string name="family_usage_access_open" tools:ignore="MissingTranslation">Open Android Usage Access settings</string>

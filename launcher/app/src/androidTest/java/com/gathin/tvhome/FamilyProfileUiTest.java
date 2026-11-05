@@ -18,6 +18,7 @@ import android.graphics.BitmapFactory;
 import android.graphics.Rect;
 import android.os.Build;
 import android.os.SystemClock;
+import android.provider.Settings;
 import android.view.KeyEvent;
 import android.view.Gravity;
 import android.view.View;
@@ -206,9 +207,12 @@ public final class FamilyProfileUiTest {
         InstrumentationRegistry.getInstrumentation().runOnMainSync(() -> receiver.onReceive(activity,
                 new Intent(Intent.ACTION_TIME_CHANGED)));
         InstrumentationRegistry.getInstrumentation().waitForIdleSync();
+        boolean automaticTime = Settings.Global.getInt(activity.getContentResolver(),
+                Settings.Global.AUTO_TIME, 0) == 1;
+        int warningResource = automaticTime ? R.string.family_clock_review_required
+                : R.string.family_clock_uncertain;
         assertTrue("Clock uncertainty must be visible in the selector warning",
-                awaitVisibleText(getString(R.string.family_clock_uncertain))
-                        .contains(getString(R.string.family_clock_uncertain)));
+                awaitVisibleText(getString(warningResource)).contains(getString(warningResource)));
         assertTrue("Clock uncertainty must remain persisted until Adult confirmation",
                 store.snapshot(today).clockUncertain);
 
@@ -226,6 +230,29 @@ public final class FamilyProfileUiTest {
         assertEquals(before.xboxUsedMs, after.xboxUsedMs);
         assertEquals(before.childExtensionMs, after.childExtensionMs);
         assertEquals(before.xboxExtensionMs, after.xboxExtensionMs);
+
+        if (automaticTime) {
+            Thread.sleep(16_000L);
+            clickView(R.id.familyProfileRefresh);
+            InstrumentationRegistry.getInstrumentation().waitForIdleSync();
+            assertNull("Stable clock recovery never opens Adult authentication",
+                    activity.findViewById(R.id.familyAdultAuthPanel));
+            FamilyProfileStore.Snapshot recovered = store.snapshot(today);
+            Properties diagnostic = new Properties();
+            try (FileInputStream input = new FileInputStream(familyFile)) { diagnostic.load(input); }
+            long nowElapsed = SystemClock.elapsedRealtime();
+            long clockAnchor = Long.parseLong(diagnostic.getProperty("clock_issue_elapsed_ms", "0"));
+            long lastWall = Long.parseLong(diagnostic.getProperty("last_wall_ms", "0"));
+            long lastElapsed = Long.parseLong(diagnostic.getProperty("last_elapsed_ms", "0"));
+            long wallElapsedDrift = Math.abs((System.currentTimeMillis() - lastWall) - (nowElapsed - lastElapsed));
+            assertFalse("The same unauthenticated refresh clears a stable, session-free marker; issue="
+                    + recovered.clockIssue + ", pending=" + recovered.sessionPending + ", auto="
+                    + automaticTime + ", anchorDelta=" + (nowElapsed - clockAnchor)
+                    + ", latestSampleDrift=" + wallElapsedDrift,
+                    recovered.clockUncertain);
+            assertEquals(before.childUsedMs, recovered.childUsedMs);
+            assertEquals(before.xboxUsedMs, recovered.xboxUsedMs);
+        }
     }
 
     @Test public void manualRefreshReconcilesSafePendingSessionWithoutAuthentication() throws Exception {

@@ -11,6 +11,7 @@ import org.junit.After;
 import org.junit.rules.TemporaryFolder;
 
 import java.io.File;
+import java.io.FileInputStream;
 import java.io.FileOutputStream;
 import java.nio.file.Files;
 import java.time.LocalDate;
@@ -21,6 +22,7 @@ import java.util.Arrays;
 import java.util.Collections;
 import java.util.Set;
 import java.util.TimeZone;
+import java.util.Properties;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicReference;
@@ -42,6 +44,16 @@ public class FamilyProfileStoreTest {
 
     private FamilyProfileStore store() {
         return new FamilyProfileStore(new File(folder.getRoot(), "family-profiles.properties"));
+    }
+
+    private File storeFile() {
+        return new File(folder.getRoot(), "family-profiles.properties");
+    }
+
+    private void writeProperties(Properties properties) throws Exception {
+        try (FileOutputStream output = new FileOutputStream(storeFile())) {
+            properties.store(output, "test state");
+        }
     }
 
     private static long wall(LocalDate day, int hour, int minute) {
@@ -246,13 +258,15 @@ public class FamilyProfileStoreTest {
         assertTrue(recovered.mustReturnHome);
         assertEquals(0L, recovered.childUsedMs);
 
-        assertTrue("Adult recovery may end, but must not charge, the unknown interval",
+        assertTrue("Adult recovery may close an ambiguous session only after reserving its possible use",
                 store().recoverInterruptedSession(startWall + 60_000L, 1_000L, 1_000L,
                         day, "Europe/Lisbon", true));
         FamilyProfileStore.Snapshot adultRecovered = store().snapshot(day);
         assertFalse(adultRecovered.sessionPending);
         assertTrue(adultRecovered.clockUncertain);
-        assertEquals(0L, adultRecovered.childUsedMs);
+        assertEquals("The possible use cannot create free minutes after a reboot",
+                adultRecovered.childSchedule.budgetMs, adultRecovered.childUsedMs);
+        assertEquals(0L, adultRecovered.remainingMs(FamilyProfileStore.Profile.CHILD_TV, day));
     }
 
     @Test public void adultRecoveryKeepsDamagedFamilyFileAndDisablesOnlyFamilyEdition() throws Exception {
@@ -540,7 +554,7 @@ public class FamilyProfileStoreTest {
         assertFalse(current.sessionPending);
     }
 
-    @Test public void ambiguousLegacyV22ClockFlagIsNotAutomaticallyCleared() throws Exception {
+    @Test public void legacyV22ClockFlagStaysClosedWithoutTrustedAutomaticTime() throws Exception {
         LocalDate day = LocalDate.of(2026, 10, 23);
         long wallNow = wall(day, 14, 0);
         long elapsedNow = 50_000_000L;
@@ -560,7 +574,246 @@ public class FamilyProfileStoreTest {
                 legacy.reconcileForLauncher(wallNow, elapsedNow, elapsedNow - 5_000_000L,
                         day, "Europe/Lisbon"));
         assertTrue(store().snapshot(day).clockUncertain);
+        assertEquals(FamilyProfileStore.ClockIssue.LEGACY_V22, store().snapshot(day).clockIssue);
         assertEquals(0L, store().snapshot(day).childUsedMs);
+    }
+
+    @Test public void v22StateMigratesAcrossV24AndRecoversAfterVerifiedDayChange() throws Exception {
+        LocalDate legacyDay = LocalDate.of(2026, 11, 2);
+        LocalDate v24Day = legacyDay.plusDays(2);
+        long v22Wall = wall(legacyDay, 23, 30);
+        long v22Elapsed = 80_000_000L;
+        Properties v22 = new Properties();
+        v22.setProperty("family_enabled", "true");
+        v22.setProperty("clock_uncertain", "true");
+        v22.setProperty("must_return_home", "true");
+        v22.setProperty("last_wall_ms", Long.toString(v22Wall));
+        v22.setProperty("last_elapsed_ms", Long.toString(v22Elapsed));
+        v22.setProperty("last_day", legacyDay.toString());
+        v22.setProperty("used.child_tv." + legacyDay, Long.toString(27 * FamilyTimePolicy.MINUTE_MS));
+        v22.setProperty("used.xbox." + legacyDay, Long.toString(8 * FamilyTimePolicy.MINUTE_MS));
+        v22.setProperty("child_apps_initialized", "true");
+        v22.setProperty("child_apps", "video.app@123");
+        writeProperties(v22);
+
+        FamilyProfileStore afterV24 = store();
+        long v24Wall = wall(v24Day, 12, 0);
+        long v24Elapsed = v22Elapsed + v24Wall - v22Wall;
+        assertFalse("A v24 read migrates the legacy marker but stays fail-closed until trusted recovery",
+                afterV24.reconcileForLauncher(v24Wall, v24Elapsed, v24Elapsed - 2_000_000L,
+                        v24Day, "Europe/Lisbon"));
+        assertEquals(FamilyProfileStore.ClockIssue.LEGACY_V22, store().snapshot(v24Day).clockIssue);
+
+        FamilyProfileStore updated = store();
+        assertTrue("A stable automatic clock and the already verified later day clear the old marker",
+                updated.observeClockAutomatically(v24Wall + 20_000L, v24Elapsed + 20_000L,
+                        v24Day, "Europe/Lisbon", true));
+        FamilyProfileStore.Snapshot migrated = store().snapshot(v24Day);
+        assertFalse(migrated.clockUncertain);
+        assertEquals(27 * FamilyTimePolicy.MINUTE_MS,
+                store().usageHistory(FamilyProfileStore.Profile.CHILD_TV, legacyDay, 1).get(legacyDay).longValue());
+        assertEquals(8 * FamilyTimePolicy.MINUTE_MS,
+                store().usageHistory(FamilyProfileStore.Profile.XBOX, legacyDay, 1).get(legacyDay).longValue());
+        assertEquals(Collections.singleton("video.app"), store().childAllowedApps());
+        assertEquals(0L, migrated.childUsedMs);
+        assertTrue(migrated.enabled);
+    }
+
+    @Test public void legacyV22MarkerWaitsUntilDayChangesWhenItWasFirstSeenToday() throws Exception {
+        LocalDate day = LocalDate.of(2026, 11, 4);
+        long wallNow = wall(day, 14, 0);
+        long elapsedNow = 90_000_000L;
+        Properties old = new Properties();
+        old.setProperty("family_enabled", "true");
+        old.setProperty("clock_uncertain", "true");
+        old.setProperty("last_wall_ms", Long.toString(wallNow - 60_000L));
+        old.setProperty("last_elapsed_ms", Long.toString(elapsedNow - 60_000L));
+        old.setProperty("last_day", day.toString());
+        old.setProperty("used.child_tv." + day, Long.toString(19 * FamilyTimePolicy.MINUTE_MS));
+        writeProperties(old);
+
+        FamilyProfileStore state = store();
+        assertFalse(state.observeClockAutomatically(wallNow, elapsedNow, day, "Europe/Lisbon", false));
+        assertEquals(FamilyProfileStore.ClockIssue.LEGACY_V22, store().snapshot(day).clockIssue);
+        assertFalse(state.observeClockAutomatically(wallNow + 20_000L, elapsedNow + 20_000L,
+                day, "Europe/Lisbon", false));
+        long nextDayWall = wall(day.plusDays(1), 0, 10);
+        long nextDayElapsed = elapsedNow + 20_000L + nextDayWall - (wallNow + 20_000L);
+        assertTrue("A verified new local day ends the one-day legacy quarantine",
+                state.observeClockAutomatically(nextDayWall, nextDayElapsed,
+                        day.plusDays(1), "Europe/Lisbon", false));
+        assertEquals(19 * FamilyTimePolicy.MINUTE_MS,
+                store().usageHistory(FamilyProfileStore.Profile.CHILD_TV, day, 1).get(day).longValue());
+        assertEquals(0L, store().snapshot(day.plusDays(1)).childUsedMs);
+    }
+
+    @Test public void manualDateJumpDuringLegacyMigrationReservesBothProfilesBeforeRecovery() throws Exception {
+        LocalDate day = LocalDate.of(2026, 11, 4);
+        long firstWall = wall(day, 12, 0);
+        long firstElapsed = 110_000_000L;
+        Properties old = new Properties();
+        old.setProperty("family_enabled", "true");
+        old.setProperty("clock_uncertain", "true");
+        old.setProperty("last_wall_ms", Long.toString(firstWall - 60_000L));
+        old.setProperty("last_elapsed_ms", Long.toString(firstElapsed - 60_000L));
+        old.setProperty("last_day", day.toString());
+        writeProperties(old);
+
+        FamilyProfileStore state = store();
+        assertFalse(state.observeClockAutomatically(firstWall, firstElapsed, day, "Europe/Lisbon", false));
+        assertFalse(state.observeClockAutomatically(firstWall + 20_000L,
+                firstElapsed + 20_000L, day, "Europe/Lisbon", false));
+        LocalDate jumpedDay = day.plusDays(1L);
+        long jumpWall = wall(jumpedDay, 12, 0);
+        long jumpElapsed = firstElapsed + 40_000L;
+        assertFalse("A manual date jump cannot clear the legacy marker immediately",
+                state.observeClockAutomatically(jumpWall, jumpElapsed, jumpedDay, "Europe/Lisbon", false));
+        assertTrue("If the parent cannot distinguish the old date, recovery spends the current-day quota",
+                state.observeClockAutomatically(jumpWall + 20_000L, jumpElapsed + 20_000L,
+                        jumpedDay, "Europe/Lisbon", false));
+        FamilyProfileStore.Snapshot recovered = store().snapshot(jumpedDay);
+        assertFalse(recovered.clockUncertain);
+        assertEquals(recovered.childSchedule.budgetMs, recovered.childUsedMs);
+        assertEquals(recovered.xboxSchedule.budgetMs, recovered.xboxUsedMs);
+    }
+
+    @Test public void stableAutomaticTimeClearsKnownClockAdjustmentWithoutChangingUsage() {
+        LocalDate day = LocalDate.of(2026, 11, 4);
+        long firstWall = wall(day, 12, 0);
+        long firstElapsed = 100_000_000L;
+        FamilyProfileStore state = store();
+        assertTrue(state.setEnabled(true));
+        assertTrue(state.observeClockAutomatically(firstWall, firstElapsed, day, "Europe/Lisbon", true));
+        assertFalse(state.observeClockAutomatically(firstWall + 60 * 60_000L,
+                firstElapsed + 60_000L, day, "Europe/Lisbon", true));
+        assertEquals(FamilyProfileStore.ClockIssue.TIME_ADJUSTED, store().snapshot(day).clockIssue);
+        assertTrue(state.observeClockAutomatically(firstWall + 60 * 60_000L + 16_000L,
+                firstElapsed + 76_000L, day, "Europe/Lisbon", true));
+        assertFalse(store().snapshot(day).clockUncertain);
+        assertEquals(0L, store().snapshot(day).childUsedMs);
+    }
+
+    @Test public void deliberateClockChangeStaysPausedWhenAutomaticTimeIsOff() {
+        LocalDate day = LocalDate.of(2026, 11, 4);
+        long wallNow = wall(day, 12, 0);
+        long elapsed = 200_000_000L;
+        FamilyProfileStore state = store();
+        assertTrue(state.observeClockAutomatically(wallNow, elapsed, day, "Europe/Lisbon", false));
+        assertFalse(state.observeClockAutomatically(wallNow + 60 * 60_000L,
+                elapsed + 60_000L, day, "Europe/Lisbon", false));
+        assertFalse(state.observeClockAutomatically(wallNow + 60 * 60_000L + 60_000L,
+                elapsed + 120_000L, day, "Europe/Lisbon", false));
+        assertTrue(store().snapshot(day).clockUncertain);
+        assertEquals(FamilyProfileStore.ClockIssue.TIME_ADJUSTED, store().snapshot(day).clockIssue);
+    }
+
+    @Test public void clockRecoveryDoesNotResetAnAlreadyReachedDailyLimit() throws Exception {
+        LocalDate day = LocalDate.of(2026, 11, 4);
+        long wallNow = wall(day, 19, 0);
+        long elapsed = 260_000_000L;
+        FamilyProfileStore defaults = store();
+        long limit = defaults.snapshot(day).childSchedule.budgetMs;
+        Properties persisted = new Properties();
+        persisted.setProperty("family_enabled", "true");
+        persisted.setProperty("clock_uncertain", "true");
+        persisted.setProperty("clock_uncertain_reason", "TIME_ADJUSTED");
+        persisted.setProperty("clock_issue_day", day.toString());
+        persisted.setProperty("clock_issue_elapsed_ms", Long.toString(elapsed - 30_000L));
+        persisted.setProperty("last_wall_ms", Long.toString(wallNow));
+        persisted.setProperty("last_elapsed_ms", Long.toString(elapsed));
+        persisted.setProperty("last_day", day.toString());
+        persisted.setProperty("used.child_tv." + day, Long.toString(limit));
+        writeProperties(persisted);
+
+        assertTrue(store().observeClockAutomatically(wallNow + 20_000L, elapsed + 20_000L,
+                day, "Europe/Lisbon", true));
+        FamilyProfileStore.Snapshot recovered = store().snapshot(day);
+        assertFalse(recovered.clockUncertain);
+        assertEquals(limit, recovered.childUsedMs);
+        assertEquals(0L, recovered.remainingMs(FamilyProfileStore.Profile.CHILD_TV, day));
+    }
+
+    @Test public void restartWithoutPendingSessionRecoversAfterStableTrustedClock() {
+        LocalDate day = LocalDate.of(2026, 11, 4);
+        long wallNow = wall(day, 12, 0);
+        FamilyProfileStore state = store();
+        assertTrue(state.observeClockAutomatically(wallNow, 500_000L, day, "Europe/Lisbon", true));
+        assertFalse(state.observeClockAutomatically(wallNow + 60_000L, 2_000L,
+                day, "Europe/Lisbon", true));
+        assertEquals(FamilyProfileStore.ClockIssue.DEVICE_RESTARTED, store().snapshot(day).clockIssue);
+        assertTrue(state.observeClockAutomatically(wallNow + 76_000L, 18_000L,
+                day, "Europe/Lisbon", true));
+        assertFalse(store().snapshot(day).clockUncertain);
+    }
+
+    @Test public void seventyTwoHourResumeReconcilesPendingSessionAndClearsStickyMarker() throws Exception {
+        LocalDate startDay = LocalDate.of(2026, 11, 1);
+        long startWall = wall(startDay, 20, 0);
+        long startElapsed = 4_000_000L;
+        long startUptime = 3_500_000L;
+        FamilyProfileStore state = store();
+        assertTrue(state.setEnabled(true));
+        assertTrue(state.initializeChildApps(Collections.singleton("video.app")));
+        assertTrue(state.setChildAppAllowed("video.app", true));
+        assertTrue(state.startSession(FamilyProfileStore.Profile.CHILD_TV, "video.app", startDay,
+                startWall, startElapsed, startUptime, true));
+        assertTrue(state.setSessionForeground(true, "video.app", startDay,
+                startWall, startElapsed, startUptime).saved);
+        assertTrue(state.recordSession(startDay, startWall + 10 * FamilyTimePolicy.MINUTE_MS,
+                startElapsed + 10 * FamilyTimePolicy.MINUTE_MS,
+                startUptime + 10 * FamilyTimePolicy.MINUTE_MS).saved);
+
+        Properties persisted = new Properties();
+        try (FileInputStream input = new FileInputStream(storeFile())) { persisted.load(input); }
+        persisted.setProperty("clock_uncertain", "true");
+        persisted.setProperty("clock_uncertain_reason", "TIME_ADJUSTED");
+        persisted.setProperty("clock_issue_day", startDay.toString());
+        persisted.setProperty("clock_issue_elapsed_ms", Long.toString(startElapsed + 10 * FamilyTimePolicy.MINUTE_MS));
+        writeProperties(persisted);
+
+        long suspendMs = 72L * 60L * 60_000L;
+        long awakeAfterWakeMs = 6L * FamilyTimePolicy.MINUTE_MS;
+        LocalDate returnDay = startDay.plusDays(3);
+        long returnWall = startWall + 10 * FamilyTimePolicy.MINUTE_MS + suspendMs;
+        long returnElapsed = startElapsed + 10 * FamilyTimePolicy.MINUTE_MS + suspendMs;
+        long returnUptime = startUptime + 10 * FamilyTimePolicy.MINUTE_MS + awakeAfterWakeMs;
+        assertTrue("Same-boot wall and elapsed time prove the 72-hour session interval",
+                store().reconcileForLauncher(returnWall, returnElapsed, returnUptime,
+                        returnDay, "Europe/Lisbon"));
+        FamilyProfileStore.Snapshot returned = store().snapshot(returnDay);
+        assertFalse(returned.clockUncertain);
+        assertFalse(returned.sessionPending);
+        assertEquals("The prior recorded ten minutes remain on their original day",
+                10 * FamilyTimePolicy.MINUTE_MS,
+                store().usageHistory(FamilyProfileStore.Profile.CHILD_TV, startDay, 1)
+                        .get(startDay).longValue());
+        assertEquals("Only awake uptime since the last tick is added after the long suspension",
+                awakeAfterWakeMs, returned.childUsedMs);
+        assertTrue("Profiles return according to today's independent schedule and remaining quota",
+                returned.remainingMs(FamilyProfileStore.Profile.CHILD_TV, returnDay) > 0L);
+        assertEquals(Collections.singleton("video.app"), store().childAllowedApps());
+    }
+
+    @Test public void rebootWithPendingSessionRemainsAmbiguousAndPreservesRecordedUse() {
+        LocalDate day = LocalDate.of(2026, 11, 4);
+        long wallNow = wall(day, 12, 0);
+        FamilyProfileStore state = store();
+        assertTrue(state.startSession(FamilyProfileStore.Profile.CHILD_TV, "video.app", day,
+                wallNow, 500_000L, 450_000L, true));
+        assertTrue(state.setSessionForeground(true, "video.app", day,
+                wallNow, 500_000L, 450_000L).saved);
+        assertTrue(state.recordSession(day, wallNow + 5 * FamilyTimePolicy.MINUTE_MS,
+                500_000L + 5 * FamilyTimePolicy.MINUTE_MS,
+                450_000L + 5 * FamilyTimePolicy.MINUTE_MS).saved);
+        long usedBefore = store().snapshot(day).childUsedMs;
+        FamilyProfileStore.UsageUpdate afterReboot = state.recordSession(day,
+                wallNow + 2 * FamilyTimePolicy.MINUTE_MS, 1_000L, 800L);
+        assertTrue(afterReboot.saved);
+        FamilyProfileStore.Snapshot snapshot = store().snapshot(day);
+        assertTrue(snapshot.clockUncertain);
+        assertTrue(snapshot.sessionPending);
+        assertEquals(usedBefore, snapshot.childUsedMs);
+        assertEquals(FamilyProfileStore.ClockIssue.SESSION_UNRECONCILED, snapshot.clockIssue);
     }
 
     @Test public void timezoneChangeMayMoveLocalDateBackwardWithoutClockUncertainty() {

@@ -28,6 +28,9 @@ final class FamilyProfileStore {
     private static final String XBOX_INPUT = "xbox_input_id";
     private static final String CLOCK_UNCERTAIN = "clock_uncertain";
     private static final String CLOCK_UNCERTAIN_REASON = "clock_uncertain_reason";
+    private static final String CLOCK_ISSUE_DAY = "clock_issue_day";
+    private static final String CLOCK_ISSUE_ELAPSED = "clock_issue_elapsed_ms";
+    private static final String CLOCK_LEGACY_TAINTED = "clock_legacy_tainted";
     private static final String LAST_WALL = "last_wall_ms";
     private static final String LAST_ELAPSED = "last_elapsed_ms";
     private static final String LAST_DAY = "last_day";
@@ -54,11 +57,12 @@ final class FamilyProfileStore {
     private static final String CHILD_APPS_INITIALIZED = "child_apps_initialized";
     private static final String CHILD_APPS = "child_apps";
     private static final long CLOCK_TOLERANCE_MS = 2L * 60L * 1000L;
+    private static final long CLOCK_STABLE_MS = 15L * 1000L;
 
     enum Profile { ADULT, CHILD_TV, XBOX }
     enum TimeBarCorner { LEFT, RIGHT }
     enum TimeBarContent { BOTH, USED, REMAINING }
-    enum ClockIssue { NONE, TIME_ADJUSTED, DEVICE_RESTARTED, SESSION_UNRECONCILED }
+    enum ClockIssue { NONE, TIME_ADJUSTED, DEVICE_RESTARTED, SESSION_UNRECONCILED, LEGACY_V22 }
 
     static final class Snapshot {
         final boolean enabled;
@@ -377,6 +381,21 @@ final class FamilyProfileStore {
         }
     }
 
+    /** Clears a stale marker only after a stable clock sample, trusted system time, and no pending session. */
+    synchronized boolean observeClockAutomatically(long wallMillis, long elapsedMillis, LocalDate day,
+                                                    String zoneId, boolean automaticTimeEnabled) {
+        synchronized (STORAGE_FILE_LOCK) {
+            if (day == null) return false;
+            Properties p = read();
+            if (storageError) return false;
+            boolean sampleCoherent = observeClock(p, wallMillis, elapsedMillis, day, zoneId);
+            if (sampleCoherent && p.getProperty(SESSION_PROFILE) == null) {
+                recoverClockMarkerWithoutSession(p, elapsedMillis, day, automaticTimeEnabled);
+            }
+            return write(p) && !Boolean.parseBoolean(p.getProperty(CLOCK_UNCERTAIN, "false"));
+        }
+    }
+
     /** Adult authenticated this adjustment. Usage records remain intact. */
     synchronized boolean confirmClock(long wallMillis, long elapsedMillis, LocalDate day) {
         return confirmClock(wallMillis, elapsedMillis, day, ZoneId.systemDefault().getId());
@@ -584,20 +603,32 @@ final class FamilyProfileStore {
             clearSession(p);
             return new UsageUpdate(0L, new ArrayList<>(), write(p), false);
         }
-        boolean clockTrusted = observeClock(p, wallMillis, elapsedMillis, day, accountingZone);
+        boolean sampleCoherent = observeClock(p, wallMillis, elapsedMillis, day, accountingZone);
+        boolean clockTrusted = sampleCoherent
+                && !Boolean.parseBoolean(p.getProperty(CLOCK_UNCERTAIN, "false"));
         long previousElapsed = number(p, SESSION_ELAPSED, elapsedMillis);
         long previousUptime = number(p, SESSION_UPTIME, uptimeMillis);
         long previousWall = number(p, SESSION_CURSOR_WALL, wallMillis);
         boolean wasScreenOn = Boolean.parseBoolean(p.getProperty(SESSION_SCREEN_ON, "false"));
         boolean wasForeground = Boolean.parseBoolean(p.getProperty(SESSION_FOREGROUND, "false"));
         boolean diagnostic = Boolean.parseBoolean(p.getProperty(SESSION_DIAGNOSTIC, "false"));
-        if (!clockTrusted || elapsedMillis < previousElapsed || uptimeMillis < previousUptime) {
+        boolean sessionIntervalCoherent = isSessionIntervalCoherent(previousWall, previousElapsed,
+                previousUptime, wallMillis, elapsedMillis, uptimeMillis);
+        boolean recoverableClockMarker = sessionIntervalCoherent
+                && enumValue(ClockIssue.class, p.getProperty(CLOCK_UNCERTAIN_REASON), ClockIssue.NONE)
+                != ClockIssue.SESSION_UNRECONCILED;
+        if ((!clockTrusted && !recoverableClockMarker)
+                || elapsedMillis < previousElapsed || uptimeMillis < previousUptime) {
             // Retain the session when the interval cannot be apportioned safely. Adult recovery can
             // end it later, but a clock correction or reboot must not erase its persisted cursor.
             p.setProperty(MUST_RETURN_HOME, "true");
+            markClockUncertain(p, ClockIssue.SESSION_UNRECONCILED);
+            setClockIssueAnchor(p, elapsedMillis, day);
             boolean saved = write(p);
             return new UsageUpdate(0L, new ArrayList<>(), saved, diagnostic);
         }
+
+        if (recoverableClockMarker) clearClockIssue(p);
 
         long elapsedDelta = elapsedMillis - previousElapsed;
         long uptimeDelta = uptimeMillis - previousUptime;
@@ -698,7 +729,7 @@ final class FamilyProfileStore {
         }
     }
 
-    /** Clear an interrupted session only when time is reconcilable or an authenticated Adult opts in. */
+    /** Clear a session after safe reconciliation or authenticated Adult review with conservative charging. */
     synchronized boolean recoverInterruptedSession(long wallMillis, long elapsedMillis, long uptimeMillis,
                                                     LocalDate day, String zoneId, boolean adultAuthenticated) {
         synchronized (STORAGE_FILE_LOCK) {
@@ -708,9 +739,9 @@ final class FamilyProfileStore {
         Properties p = read();
         if (storageError || p.getProperty(SESSION_PROFILE) == null) return !storageError;
         if (!adultAuthenticated) return false;
-        if (p.getProperty(CLOCK_UNCERTAIN_REASON) == null) {
-            markClockUncertain(p, ClockIssue.SESSION_UNRECONCILED);
-        }
+        reserveAmbiguousSessionUsage(p, day);
+        markClockUncertain(p, ClockIssue.SESSION_UNRECONCILED);
+        setClockIssueAnchor(p, elapsedMillis, day);
         p.setProperty(MUST_RETURN_HOME, "true");
         clearSession(p);
         observeClock(p, wallMillis, elapsedMillis, day, zoneId);
@@ -718,11 +749,53 @@ final class FamilyProfileStore {
         }
     }
 
+    /**
+     * Unknown time is never silently forgiven. Adult recovery reserves the remaining daily budget
+     * for the session date through today (up to 31 dates); this may overstate use, but cannot grant
+     * time after a reboot or clock edit. Already-recorded usage is only increased, never reset.
+     */
+    private static void reserveAmbiguousSessionUsage(Properties p, LocalDate currentDay) {
+        Profile profile;
+        try { profile = Profile.valueOf(p.getProperty(SESSION_PROFILE)); }
+        catch (Exception invalid) { return; }
+        if (profile == Profile.ADULT || Boolean.parseBoolean(p.getProperty(SESSION_DIAGNOSTIC, "false"))) return;
+        LocalDate sessionDay;
+        try { sessionDay = LocalDate.parse(p.getProperty(SESSION_DAY)); }
+        catch (Exception invalid) { sessionDay = currentDay; }
+        LocalDate first = sessionDay.isBefore(currentDay) ? sessionDay : currentDay;
+        LocalDate last = sessionDay.isAfter(currentDay) ? sessionDay : currentDay;
+        long span;
+        try { span = java.time.temporal.ChronoUnit.DAYS.between(first, last); }
+        catch (ArithmeticException overflow) { span = 32L; }
+        if (span > 30L) {
+            reserveRemainingForDay(p, profile, sessionDay);
+            if (!currentDay.equals(sessionDay)) reserveRemainingForDay(p, profile, currentDay);
+            return;
+        }
+        for (LocalDate date = first; !date.isAfter(last); date = date.plusDays(1L)) {
+            reserveRemainingForDay(p, profile, date);
+        }
+    }
+
+    private static void reserveRemainingForDay(Properties p, Profile profile, LocalDate day) {
+        long remainingMs = remaining(p, profile, day);
+        if (remainingMs <= 0L) return;
+        String key = usageKey(profile, day);
+        p.setProperty(key, Long.toString(saturatedAdd(number(p, key, 0L), remainingMs)));
+    }
+
     private boolean observeClock(Properties p, long wallMillis, long elapsedMillis,
                                  LocalDate day, String zoneId) {
         long previousWall = number(p, LAST_WALL, -1L);
         long previousElapsed = number(p, LAST_ELAPSED, -1L);
         String previousDay = p.getProperty(LAST_DAY);
+        boolean legacyUnclassified = Boolean.parseBoolean(p.getProperty(CLOCK_UNCERTAIN, "false"))
+                && p.getProperty(CLOCK_UNCERTAIN_REASON) == null;
+        if (legacyUnclassified) {
+            p.setProperty(CLOCK_UNCERTAIN_REASON, ClockIssue.LEGACY_V22.name());
+            p.setProperty(CLOCK_ISSUE_DAY, validDay(previousDay) ? previousDay : day.toString());
+            p.setProperty(CLOCK_ISSUE_ELAPSED, Long.toString(elapsedMillis));
+        }
         String previousZone = p.getProperty(LAST_ZONE);
         ClockIssue issue = ClockIssue.NONE;
         if (previousWall >= 0L) {
@@ -746,9 +819,67 @@ final class FamilyProfileStore {
                 issue = ClockIssue.TIME_ADJUSTED;
             }
         }
-        if (issue != ClockIssue.NONE) markClockUncertain(p, issue);
+        if (issue != ClockIssue.NONE) {
+            ClockIssue existing = enumValue(ClockIssue.class, p.getProperty(CLOCK_UNCERTAIN_REASON), ClockIssue.NONE);
+            if (existing == ClockIssue.LEGACY_V22) {
+                p.setProperty(CLOCK_LEGACY_TAINTED, "true");
+            } else {
+                markClockUncertain(p, issue);
+                setClockIssueAnchor(p, elapsedMillis, day);
+            }
+        }
         setClockSample(p, wallMillis, elapsedMillis, day, zoneId);
-        return issue == ClockIssue.NONE && !Boolean.parseBoolean(p.getProperty(CLOCK_UNCERTAIN, "false"));
+        return issue == ClockIssue.NONE;
+    }
+
+    private static boolean isSessionIntervalCoherent(long previousWall, long previousElapsed,
+                                                     long previousUptime, long wallMillis,
+                                                     long elapsedMillis, long uptimeMillis) {
+        if (previousWall < 0L || previousElapsed < 0L || previousUptime < 0L
+                || elapsedMillis < previousElapsed || uptimeMillis < previousUptime
+                || wallMillis < previousWall) return false;
+        long wallDelta = wallMillis - previousWall;
+        long elapsedDelta = elapsedMillis - previousElapsed;
+        long uptimeDelta = uptimeMillis - previousUptime;
+        return distance(wallDelta, elapsedDelta) <= CLOCK_TOLERANCE_MS
+                && uptimeDelta <= saturatedAdd(elapsedDelta, CLOCK_TOLERANCE_MS);
+    }
+
+    private static void recoverClockMarkerWithoutSession(Properties p, long elapsedMillis, LocalDate day,
+                                                         boolean automaticTimeEnabled) {
+        if (!Boolean.parseBoolean(p.getProperty(CLOCK_UNCERTAIN, "false"))) return;
+        ClockIssue issue = enumValue(ClockIssue.class, p.getProperty(CLOCK_UNCERTAIN_REASON), ClockIssue.NONE);
+        if (issue == ClockIssue.SESSION_UNRECONCILED || issue == ClockIssue.NONE) return;
+        String anchorValue = p.getProperty(CLOCK_ISSUE_ELAPSED);
+        if (anchorValue == null) {
+            setClockIssueAnchor(p, elapsedMillis, day);
+            return;
+        }
+        long anchor = number(p, CLOCK_ISSUE_ELAPSED, elapsedMillis);
+        if (elapsedMillis < anchor) {
+            setClockIssueAnchor(p, elapsedMillis, day);
+            return;
+        }
+        if (elapsedMillis - anchor < CLOCK_STABLE_MS) return;
+        if (issue == ClockIssue.LEGACY_V22) {
+            String issueDay = p.getProperty(CLOCK_ISSUE_DAY);
+            if (!validDay(issueDay) || day.toString().compareTo(issueDay) <= 0) return;
+            if (Boolean.parseBoolean(p.getProperty(CLOCK_LEGACY_TAINTED, "false"))) {
+                // A date jump while migrating an unclassified v22 marker cannot be trusted.
+                // Reserve both independent profiles' current-day balances before reopening them.
+                reserveRemainingForDay(p, Profile.CHILD_TV, day);
+                reserveRemainingForDay(p, Profile.XBOX, day);
+            }
+            clearClockIssue(p);
+            return;
+        }
+        if (!automaticTimeEnabled) return;
+        clearClockIssue(p);
+    }
+
+    private static void setClockIssueAnchor(Properties p, long elapsedMillis, LocalDate day) {
+        p.setProperty(CLOCK_ISSUE_ELAPSED, Long.toString(Math.max(0L, elapsedMillis)));
+        if (day != null) p.setProperty(CLOCK_ISSUE_DAY, day.toString());
     }
 
     private static long activeUsageStartWall(long previousWall, long wallMillis, long activeDelta) {
@@ -767,7 +898,8 @@ final class FamilyProfileStore {
 
     private static void markClockUncertain(Properties p, ClockIssue issue) {
         p.setProperty(CLOCK_UNCERTAIN, "true");
-        if (issue != null && issue != ClockIssue.NONE && p.getProperty(CLOCK_UNCERTAIN_REASON) == null) {
+        ClockIssue existing = enumValue(ClockIssue.class, p.getProperty(CLOCK_UNCERTAIN_REASON), ClockIssue.NONE);
+        if (issue != null && issue != ClockIssue.NONE && existing != ClockIssue.LEGACY_V22) {
             p.setProperty(CLOCK_UNCERTAIN_REASON, issue.name());
         }
     }
@@ -775,6 +907,9 @@ final class FamilyProfileStore {
     private static void clearClockIssue(Properties p) {
         p.setProperty(CLOCK_UNCERTAIN, "false");
         p.remove(CLOCK_UNCERTAIN_REASON);
+        p.remove(CLOCK_ISSUE_DAY);
+        p.remove(CLOCK_ISSUE_ELAPSED);
+        p.remove(CLOCK_LEGACY_TAINTED);
     }
 
     private static long remaining(Properties p, Profile profile, LocalDate day) {
@@ -1002,6 +1137,9 @@ final class FamilyProfileStore {
                 || (childApps != null && !validPackageList(childApps))) return false;
         if (!validOptionalNonnegative(p.getProperty(LAST_WALL))
                 || !validOptionalNonnegative(p.getProperty(LAST_ELAPSED))
+                || !validOptionalNonnegative(p.getProperty(CLOCK_ISSUE_ELAPSED))
+                || !validDay(p.getProperty(CLOCK_ISSUE_DAY))
+                || !validBoolean(p.getProperty(CLOCK_LEGACY_TAINTED))
                 || !validEnum(ClockIssue.class, p.getProperty(CLOCK_UNCERTAIN_REASON))) return false;
         if (p.getProperty(LAST_WALL) != null && p.getProperty(LAST_ELAPSED) == null) return false;
         String lastZone = p.getProperty(LAST_ZONE);

@@ -1,6 +1,6 @@
 # CleanYourTV — Edição Família
 
-Edição experimental 2.9 no ramo `feature/family-profiles`, derivada da CleanYourTV Custom Edition 2.4. Esta versão usa `versionCode` 24 para permitir atualização das versões experimentais anteriores. Está a ser preparada para Android TV 9 e não substitui nem altera o ramo estável `custom-2.4`.
+Edição experimental 2.9.1 no ramo `feature/family-profiles`, derivada da CleanYourTV Custom Edition 2.4. Esta versão usa `versionCode` 26 para permitir atualização das versões experimentais anteriores. Está a ser preparada para Android TV 9 e não substitui nem altera o ramo estável `custom-2.4`.
 
 ## Perfis e limites
 
@@ -14,7 +14,7 @@ O controlo começa desativado e só é ativado por um adulto autenticado. Não e
 
 Os horários avançados são opcionais e independentes para Criança e Xbox. Sem alterações, mantêm-se 07:00–22:00 e os limites existentes (60 minutos para Criança; 60 minutos úteis e 120 minutos ao fim de semana para Xbox). As janelas são do mesmo dia; não são aceites horários que atravessem a meia-noite. Cada dia pode ser reposto individualmente à predefinição.
 
-As estatísticas são locais, mantêm Criança e Xbox em colunas/valores separados e mostram os últimos sete dias, incluindo o dia atual. Apenas contam intervalos registados como ecrã ligado e aplicação em primeiro plano. A suspensão normal é excluída pelo estado de ecrã e pelos relógios monotónicos. Se o processo for terminado enquanto o dispositivo continua ligado, o estado persistido pode levar a contabilizar conservadoramente o intervalo desde a última amostra; eventos entretanto ocorridos podem causar uma pequena sobrecontagem. Se o dispositivo reiniciar, o relógio monotónico deixa de ser contínuo: a sessão desconhecida fica pendente sem ser cobrada, o acesso infantil fica suspenso e o Adulto tem de rever o relógio antes de retomar. Os perfis não partilham nem duplicam saldos.
+As estatísticas são locais, mantêm Criança e Xbox em colunas/valores separados e mostram os últimos sete dias, incluindo o dia atual. Apenas contam intervalos registados como ecrã ligado e aplicação em primeiro plano. A suspensão normal é excluída pelo estado de ecrã e pelos relógios monotónicos. Se o processo for terminado enquanto o dispositivo continua ligado, o estado persistido pode levar a contabilizar conservadoramente o intervalo desde a última amostra; eventos entretanto ocorridos podem causar uma pequena sobrecontagem. Se o dispositivo reiniciar durante uma sessão, o intervalo entre a última gravação e o reinício não pode ser reconstruído. A sessão fica pendente e exige revisão autenticada do Adulto; nesse caso, o saldo diário possível é reservado nos dias afetados, sem reduzir o uso já registado. Os perfis não partilham nem duplicam saldos.
 
 ## Aplicações do perfil Criança
 
@@ -40,11 +40,19 @@ A duração mede apenas o tempo que o monitor observa a aplicação em primeiro 
 
 O estado de gestão distingue funcionalidade desligada, falta de Usage Access, dados ilegíveis, necessidade de rever o relógio e estado pronto. “Pronta” significa que a monitorização está preparada para lançamentos originados neste launcher; não significa bloqueio do Android inteiro nem controlo da entrada HDMI.
 
-## Atualização após suspensão (v24)
+## Atualização após suspensão e recuperação do relógio (v26)
 
 O regresso ao launcher, o despertar e o botão **Atualizar** usam o mesmo caminho de contabilização. Atualizar não pede a sequência do Adulto. Quando os relógios de parede e monotónico concordam, o estado pendente é fechado automaticamente; a utilização é limitada pelo avanço de `elapsedRealtime()` e `uptimeMillis()`, pelo estado persistido de ecrã ligado e pela aplicação em primeiro plano. Assim, numa suspensão das 23:00 às 14:00, o período de suspensão não é cobrado e o saldo do novo dia é consultado sem alterar o histórico do dia anterior. Se não chegaram eventos de ecrã, o tempo acordado recuperável é atribuído ao fim do intervalo e ao dia atual, porque o Android não fornece informação suficiente para reconstruir o instante exato de cada utilização nesse período.
 
-Uma alteração real ou ambígua do relógio, ou a reinicialização do dispositivo durante uma sessão, mantém a sessão pendente e Criança/Xbox pausados. **Atualizar** mostra um aviso curto, não autentica nem apaga dados; o Adulto tem de entrar no perfil e rever a hora. Os estados persistidos pela v22 não guardam a causa da incerteza, por isso uma instalação que já tenha esse indicador ativo não pode distingui-lo com segurança de uma alteração real do relógio e pode exigir esta revisão uma vez. Esta salvaguarda evita repor saldos ou horários com uma hora que não possa ser confirmada.
+O bloqueio persistente da v24 tinha uma causa confirmada no código: `clock_uncertain=true` era gravado, mas nunca removido por uma observação posterior coerente. Além disso, `recordSession()` não avançava o cursor enquanto a marca existisse. Isto explica como um aviso podia permanecer após a hora estabilizar. A ocorrência concreta na Xiaomi não foi possível atribuir a `TIME_ADJUSTED`, `DEVICE_RESTARTED`, estado herdado da v22 ou sessão pendente: a TV não estava ligada ao ADB nesta auditoria, e uma build Release não permite ler legitimamente o ficheiro privado.
+
+A recuperação v26 não autentica sessões normais. Quando o intervalo da sessão ainda é provado pela concordância entre hora de parede e relógio monotónico, e pelo cursor de ecrã/primeiro plano, o uso é debitado antes de fechar a sessão e limpar uma marca recuperável. Numa suspensão de 72 horas no mesmo arranque, `elapsedRealtime()` abrange a suspensão e `uptimeMillis()` limita a cobrança ao tempo acordado; uma amostra em falta pode deslocar esse uso recuperável para o fim do intervalo, mas não o descarta.
+
+Sem sessão pendente, `TIME_ADJUSTED` e `DEVICE_RESTARTED` limpam-se automaticamente depois de 15 segundos de amostras coerentes se o Android indicar que a hora automática está ativa. O launcher repete a verificação no regresso, em eventos temporais, no botão **Atualizar** e no ciclo já existente da interface; não inicia serviço permanente. A hora automática é um sinal de confiança do Android, não uma fonte criptográfica; uma hora de sistema errada que permaneça estável não pode ser detetada por uma aplicação comum.
+
+Estados v22 com `clock_uncertain=true` mas sem motivo migram para `LEGACY_V22`. A aplicação preserva todos os contadores e preferências e aguarda uma mudança de dia local validada antes de limpar a marca. Se surgir um salto de relógio durante essa migração, debita preventivamente o saldo do dia atual de Criança e Xbox antes de voltar a disponibilizar os perfis. Esta migração de legado pode exigir esperar até ao próximo dia local. Uma sessão com relógio monotónico reiniciado, uma sessão sem cursor confiável ou uma marca `SESSION_UNRECONCILED` continua a exigir Adulto; não é possível reconstruir com segurança uso não observado. Ao fechar uma sessão ambígua, o saldo diário possível entre a data da sessão e a data atual é reservado (máximo de 31 datas; em intervalos maiores, as datas inicial e atual), o que pode sobrecontar, mas não concede minutos por uma reinicialização.
+
+O botão **Atualizar** executa a mesma política sem pedir sequência do Adulto. Estados recuperáveis atualizam os cartões e limites automaticamente. Para estados realmente ambíguos, o aviso indica que uma sessão não pôde ser medida; as utilizações previamente gravadas permanecem intactas. Uma alteração manual com hora automática desligada não é limpa automaticamente, exceto a migração v22 após a salvaguarda de mudança de dia descrita acima.
 
 ## Abertura da entrada Xbox
 
