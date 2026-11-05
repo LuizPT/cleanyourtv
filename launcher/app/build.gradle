@@ -10,10 +10,10 @@ android {
         applicationId 'com.gathin.tvhome'
         minSdk 26
         targetSdk 34
-        // Keep the existing code so the saved pre-change APK can be restored with `adb install -r`
-        // without a version downgrade; Android accepts replacement at the same version code.
-        versionCode 4
-        versionName '2.4'
+        // Keep recovery above Family v26 so it can replace it in place. Returning to Family
+        // Edition after this recovery requires a future versionCode of 28 or higher.
+        versionCode 27
+        versionName '2.4-recovery-v27'
     }
 
     buildTypes {
