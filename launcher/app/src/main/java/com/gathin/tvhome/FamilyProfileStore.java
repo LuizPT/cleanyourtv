@@ -62,7 +62,7 @@ final class FamilyProfileStore {
     enum Profile { ADULT, CHILD_TV, XBOX }
     enum TimeBarCorner { LEFT, RIGHT }
     enum TimeBarContent { BOTH, USED, REMAINING }
-    enum ClockIssue { NONE, TIME_ADJUSTED, DEVICE_RESTARTED, SESSION_UNRECONCILED, LEGACY_V22 }
+    enum ClockIssue { NONE, TIME_ADJUSTED, DEVICE_RESTARTED, TIMEZONE_CHANGED, SESSION_UNRECONCILED, LEGACY_V22 }
 
     static final class Snapshot {
         final boolean enabled;
@@ -372,25 +372,39 @@ final class FamilyProfileStore {
     }
 
     synchronized boolean observeClock(long wallMillis, long elapsedMillis, LocalDate day, String zoneId) {
+        return observeClock(wallMillis, elapsedMillis, day, zoneId, false);
+    }
+
+    synchronized boolean observeClock(long wallMillis, long elapsedMillis, LocalDate day,
+                                      String zoneId, boolean automaticTimeAndZoneEnabled) {
         synchronized (STORAGE_FILE_LOCK) {
-        if (day == null) return false;
-        Properties p = read();
-        if (storageError) return false;
-        observeClock(p, wallMillis, elapsedMillis, day, zoneId);
-        return write(p) && !Boolean.parseBoolean(p.getProperty(CLOCK_UNCERTAIN, "false"));
+            if (day == null) return false;
+            Properties p = read();
+            if (storageError) return false;
+            observeClock(p, wallMillis, elapsedMillis, day, zoneId, automaticTimeAndZoneEnabled);
+            return write(p) && !Boolean.parseBoolean(p.getProperty(CLOCK_UNCERTAIN, "false"));
         }
     }
 
     /** Clears a stale marker only after a stable clock sample, trusted system time, and no pending session. */
     synchronized boolean observeClockAutomatically(long wallMillis, long elapsedMillis, LocalDate day,
                                                     String zoneId, boolean automaticTimeEnabled) {
+        return observeClockAutomatically(wallMillis, elapsedMillis, day, zoneId,
+                automaticTimeEnabled, false);
+    }
+
+    synchronized boolean observeClockAutomatically(long wallMillis, long elapsedMillis, LocalDate day,
+                                                    String zoneId, boolean automaticTimeEnabled,
+                                                    boolean automaticTimeZoneEnabled) {
         synchronized (STORAGE_FILE_LOCK) {
             if (day == null) return false;
             Properties p = read();
             if (storageError) return false;
-            boolean sampleCoherent = observeClock(p, wallMillis, elapsedMillis, day, zoneId);
+            boolean sampleCoherent = observeClock(p, wallMillis, elapsedMillis, day, zoneId,
+                    automaticTimeEnabled && automaticTimeZoneEnabled);
             if (sampleCoherent && p.getProperty(SESSION_PROFILE) == null) {
-                recoverClockMarkerWithoutSession(p, elapsedMillis, day, automaticTimeEnabled);
+                recoverClockMarkerWithoutSession(p, elapsedMillis, day,
+                        automaticTimeEnabled, automaticTimeZoneEnabled);
             }
             return write(p) && !Boolean.parseBoolean(p.getProperty(CLOCK_UNCERTAIN, "false"));
         }
@@ -614,9 +628,11 @@ final class FamilyProfileStore {
         boolean diagnostic = Boolean.parseBoolean(p.getProperty(SESSION_DIAGNOSTIC, "false"));
         boolean sessionIntervalCoherent = isSessionIntervalCoherent(previousWall, previousElapsed,
                 previousUptime, wallMillis, elapsedMillis, uptimeMillis);
+        ClockIssue clockIssue = enumValue(ClockIssue.class,
+                p.getProperty(CLOCK_UNCERTAIN_REASON), ClockIssue.NONE);
         boolean recoverableClockMarker = sessionIntervalCoherent
-                && enumValue(ClockIssue.class, p.getProperty(CLOCK_UNCERTAIN_REASON), ClockIssue.NONE)
-                != ClockIssue.SESSION_UNRECONCILED;
+                && clockIssue != ClockIssue.SESSION_UNRECONCILED
+                && clockIssue != ClockIssue.TIMEZONE_CHANGED;
         if ((!clockTrusted && !recoverableClockMarker)
                 || elapsedMillis < previousElapsed || uptimeMillis < previousUptime) {
             // Retain the session when the interval cannot be apportioned safely. Adult recovery can
@@ -786,6 +802,11 @@ final class FamilyProfileStore {
 
     private boolean observeClock(Properties p, long wallMillis, long elapsedMillis,
                                  LocalDate day, String zoneId) {
+        return observeClock(p, wallMillis, elapsedMillis, day, zoneId, false);
+    }
+
+    private boolean observeClock(Properties p, long wallMillis, long elapsedMillis,
+                                 LocalDate day, String zoneId, boolean automaticTimeAndZoneEnabled) {
         long previousWall = number(p, LAST_WALL, -1L);
         long previousElapsed = number(p, LAST_ELAPSED, -1L);
         String previousDay = p.getProperty(LAST_DAY);
@@ -811,9 +832,14 @@ final class FamilyProfileStore {
                     issue = ClockIssue.TIME_ADJUSTED;
                 }
             }
-            // A local date can move backward after a legitimate zone change. UTC wall/monotonic
-            // comparison above is authoritative for clock edits; a zone-only change is harmless.
+            // Keep the current daily quota when the zone changes without crossing a local date.
+            // A manual zone change selecting another date needs Adult review. When Android has both
+            // automatic time and automatic zone enabled, the coherent system transition is trusted.
             if (issue == ClockIssue.NONE && previousZone != null && zoneId != null
+                    && previousDay != null && !previousZone.equals(zoneId)
+                    && !day.toString().equals(previousDay) && !automaticTimeAndZoneEnabled) {
+                issue = ClockIssue.TIMEZONE_CHANGED;
+            } else if (issue == ClockIssue.NONE && previousZone != null && zoneId != null
                     && previousZone.equals(zoneId) && previousDay != null
                     && day.toString().compareTo(previousDay) < 0) {
                 issue = ClockIssue.TIME_ADJUSTED;
@@ -846,7 +872,8 @@ final class FamilyProfileStore {
     }
 
     private static void recoverClockMarkerWithoutSession(Properties p, long elapsedMillis, LocalDate day,
-                                                         boolean automaticTimeEnabled) {
+                                                         boolean automaticTimeEnabled,
+                                                         boolean automaticTimeZoneEnabled) {
         if (!Boolean.parseBoolean(p.getProperty(CLOCK_UNCERTAIN, "false"))) return;
         ClockIssue issue = enumValue(ClockIssue.class, p.getProperty(CLOCK_UNCERTAIN_REASON), ClockIssue.NONE);
         if (issue == ClockIssue.SESSION_UNRECONCILED || issue == ClockIssue.NONE) return;
@@ -873,7 +900,7 @@ final class FamilyProfileStore {
             clearClockIssue(p);
             return;
         }
-        if (!automaticTimeEnabled) return;
+        if (!automaticTimeEnabled || (issue == ClockIssue.TIMEZONE_CHANGED && !automaticTimeZoneEnabled)) return;
         clearClockIssue(p);
     }
 

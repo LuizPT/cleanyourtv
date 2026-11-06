@@ -693,6 +693,37 @@ public class FamilyProfileStoreTest {
         assertEquals(0L, store().snapshot(day).childUsedMs);
     }
 
+    @Test public void automaticTimeSyncAcrossMidnightClearsWithoutAdultAndPreservesUsage() throws Exception {
+        LocalDate previousDay = LocalDate.of(2026, 11, 5);
+        LocalDate synchronizedDay = previousDay.plusDays(1);
+        long firstWall = wall(previousDay, 23, 50);
+        long firstElapsed = 150_000_000L;
+        Properties persisted = new Properties();
+        persisted.setProperty("family_enabled", "true");
+        persisted.setProperty("used.child_tv." + previousDay,
+                Long.toString(10 * FamilyTimePolicy.MINUTE_MS));
+        writeProperties(persisted);
+
+        FamilyProfileStore state = store();
+        assertTrue(state.observeClockAutomatically(firstWall, firstElapsed, previousDay,
+                "Europe/Lisbon", true));
+
+        long synchronizedWall = wall(synchronizedDay, 0, 15);
+        long synchronizedElapsed = firstElapsed + FamilyTimePolicy.MINUTE_MS;
+        assertFalse("A wall-clock correction crossing midnight is held for stable samples, not Adult authentication",
+                state.observeClockAutomatically(synchronizedWall, synchronizedElapsed, synchronizedDay,
+                        "Europe/Lisbon", true));
+        assertEquals(FamilyProfileStore.ClockIssue.TIME_ADJUSTED,
+                store().snapshot(synchronizedDay).clockIssue);
+
+        assertTrue("Trusted automatic time clears the transient correction after 15 stable seconds",
+                state.observeClockAutomatically(synchronizedWall + 16_000L,
+                        synchronizedElapsed + 16_000L, synchronizedDay, "Europe/Lisbon", true));
+        assertFalse(store().snapshot(synchronizedDay).clockUncertain);
+        assertEquals("Previously recorded usage remains attached to its original civil day",
+                10 * FamilyTimePolicy.MINUTE_MS, store().snapshot(previousDay).childUsedMs);
+    }
+
     @Test public void deliberateClockChangeStaysPausedWhenAutomaticTimeIsOff() {
         LocalDate day = LocalDate.of(2026, 11, 4);
         long wallNow = wall(day, 12, 0);
@@ -794,6 +825,51 @@ public class FamilyProfileStoreTest {
         assertEquals(Collections.singleton("video.app"), store().childAllowedApps());
     }
 
+    @Test public void seventyTwoHourXboxResumePreservesIndependentUsageAndQuota() throws Exception {
+        LocalDate startDay = LocalDate.of(2026, 11, 1);
+        long startWall = wall(startDay, 20, 0);
+        long startElapsed = 8_000_000L;
+        long startUptime = 7_500_000L;
+        FamilyProfileStore state = store();
+        assertTrue(state.setEnabled(true));
+        assertTrue(state.startSession(FamilyProfileStore.Profile.XBOX, "hdmi.synthetic", startDay,
+                startWall, startElapsed, startUptime, true));
+        assertTrue(state.setSessionForeground(true, "hdmi.synthetic", startDay,
+                startWall, startElapsed, startUptime).saved);
+        assertTrue(state.recordSession(startDay, startWall + 10 * FamilyTimePolicy.MINUTE_MS,
+                startElapsed + 10 * FamilyTimePolicy.MINUTE_MS,
+                startUptime + 10 * FamilyTimePolicy.MINUTE_MS).saved);
+
+        Properties persisted = new Properties();
+        try (FileInputStream input = new FileInputStream(storeFile())) { persisted.load(input); }
+        persisted.setProperty("clock_uncertain", "true");
+        persisted.setProperty("clock_uncertain_reason", "TIME_ADJUSTED");
+        persisted.setProperty("clock_issue_day", startDay.toString());
+        persisted.setProperty("clock_issue_elapsed_ms", Long.toString(startElapsed + 10 * FamilyTimePolicy.MINUTE_MS));
+        writeProperties(persisted);
+
+        long suspendMs = 72L * 60L * 60_000L;
+        long awakeAfterWakeMs = 4L * FamilyTimePolicy.MINUTE_MS;
+        LocalDate returnDay = startDay.plusDays(3);
+        long returnWall = startWall + 10 * FamilyTimePolicy.MINUTE_MS + suspendMs;
+        long returnElapsed = startElapsed + 10 * FamilyTimePolicy.MINUTE_MS + suspendMs;
+        long returnUptime = startUptime + 10 * FamilyTimePolicy.MINUTE_MS + awakeAfterWakeMs;
+        assertTrue("Same-boot wall and elapsed time prove a normal 72-hour Xbox interval",
+                store().reconcileForLauncher(returnWall, returnElapsed, returnUptime,
+                        returnDay, "Europe/Lisbon"));
+
+        FamilyProfileStore.Snapshot returned = store().snapshot(returnDay);
+        assertFalse(returned.clockUncertain);
+        assertFalse(returned.sessionPending);
+        assertEquals(10 * FamilyTimePolicy.MINUTE_MS,
+                store().usageHistory(FamilyProfileStore.Profile.XBOX, startDay, 1)
+                        .get(startDay).longValue());
+        assertEquals(awakeAfterWakeMs, returned.xboxUsedMs);
+        assertEquals("Child's independent balance must not change during an Xbox session",
+                0L, returned.childUsedMs);
+        assertTrue(returned.remainingMs(FamilyProfileStore.Profile.XBOX, returnDay) > 0L);
+    }
+
     @Test public void rebootWithPendingSessionRemainsAmbiguousAndPreservesRecordedUse() {
         LocalDate day = LocalDate.of(2026, 11, 4);
         long wallNow = wall(day, 12, 0);
@@ -816,9 +892,9 @@ public class FamilyProfileStoreTest {
         assertEquals(FamilyProfileStore.ClockIssue.SESSION_UNRECONCILED, snapshot.clockIssue);
     }
 
-    @Test public void timezoneChangeMayMoveLocalDateBackwardWithoutClockUncertainty() {
+    @Test public void timezoneChangeWithinSameLocalDateDoesNotCreateClockUncertainty() {
         LocalDate lisbonDay = LocalDate.of(2026, 10, 23);
-        long firstWall = lisbonDay.atTime(0, 30).atZone(ZoneId.of("Europe/Lisbon"))
+        long firstWall = lisbonDay.atTime(12, 30).atZone(ZoneId.of("Europe/Lisbon"))
                 .toInstant().toEpochMilli();
         long firstElapsed = 10_000_000L;
         FamilyProfileStore state = store();
@@ -827,8 +903,102 @@ public class FamilyProfileStoreTest {
         long nextWall = firstWall + 5 * FamilyTimePolicy.MINUTE_MS;
         LocalDate localDayAfterZoneChange = java.time.Instant.ofEpochMilli(nextWall)
                 .atZone(newZone).toLocalDate();
+        assertEquals("A zone change within the same local date keeps the existing daily bucket",
+                lisbonDay, localDayAfterZoneChange);
         assertTrue(state.observeClock(nextWall, firstElapsed + 5 * FamilyTimePolicy.MINUTE_MS,
                 localDayAfterZoneChange, newZone.getId()));
+        assertFalse(store().snapshot(localDayAfterZoneChange).clockUncertain);
+    }
+
+    @Test public void automaticTimezoneSyncAcrossLocalDateDoesNotBlockPendingSession() {
+        TimeZone originalZone = TimeZone.getDefault();
+        try {
+            TimeZone.setDefault(TimeZone.getTimeZone(LISBON));
+            LocalDate lisbonDay = LocalDate.of(2026, 10, 23);
+            long firstWall = lisbonDay.atTime(0, 30).atZone(LISBON).toInstant().toEpochMilli();
+            long firstElapsed = 10_000_000L;
+            long firstUptime = 8_000_000L;
+            FamilyProfileStore state = store();
+            assertTrue(state.setEnabled(true));
+            assertTrue(state.observeClock(firstWall, firstElapsed, lisbonDay, LISBON.getId()));
+            assertTrue(state.startSession(FamilyProfileStore.Profile.CHILD_TV, "video.app", lisbonDay,
+                    firstWall, firstElapsed, firstUptime, true));
+            assertTrue(state.setSessionForeground(true, "video.app", lisbonDay, firstWall,
+                    firstElapsed, firstUptime).saved);
+
+            ZoneId newZone = ZoneId.of("America/New_York");
+            TimeZone.setDefault(TimeZone.getTimeZone(newZone));
+            long nextWall = firstWall + 5 * FamilyTimePolicy.MINUTE_MS;
+            long nextElapsed = firstElapsed + 5 * FamilyTimePolicy.MINUTE_MS;
+            LocalDate localDayAfterZoneChange = java.time.Instant.ofEpochMilli(nextWall)
+                    .atZone(newZone).toLocalDate();
+
+            assertTrue("Automatic Android time and zone synchronization should not mark a coherent session uncertain",
+                    state.observeClockAutomatically(nextWall, nextElapsed, localDayAfterZoneChange,
+                            newZone.getId(), true, true));
+            FamilyProfileStore.UsageUpdate update = state.setSessionForeground(true, "video.app",
+                    localDayAfterZoneChange, nextWall, nextElapsed,
+                    firstUptime + 5 * FamilyTimePolicy.MINUTE_MS);
+            FamilyProfileStore.Snapshot resumed = store().snapshot(localDayAfterZoneChange);
+            assertTrue(update.saved);
+            assertTrue(resumed.sessionPending);
+            assertFalse(resumed.clockUncertain);
+            assertEquals("The coherent elapsed interval is counted once across the zone transition",
+                    5 * FamilyTimePolicy.MINUTE_MS,
+                    store().snapshot(lisbonDay).childUsedMs + resumed.childUsedMs);
+        } finally {
+            TimeZone.setDefault(originalZone);
+        }
+    }
+
+    @Test public void timezoneMarkerClearsAfterTrustedAutomaticZoneSyncStabilizes() {
+        LocalDate lisbonDay = LocalDate.of(2026, 10, 23);
+        long firstWall = lisbonDay.atTime(0, 30).atZone(LISBON).toInstant().toEpochMilli();
+        long firstElapsed = 20_000_000L;
+        FamilyProfileStore state = store();
+        assertTrue(state.setEnabled(true));
+        assertTrue(state.observeClock(firstWall, firstElapsed, lisbonDay, LISBON.getId()));
+
+        ZoneId newZone = ZoneId.of("America/New_York");
+        long changedWall = firstWall + 5 * FamilyTimePolicy.MINUTE_MS;
+        long changedElapsed = firstElapsed + 5 * FamilyTimePolicy.MINUTE_MS;
+        LocalDate changedDay = java.time.Instant.ofEpochMilli(changedWall).atZone(newZone).toLocalDate();
+        assertFalse(state.observeClockAutomatically(changedWall, changedElapsed, changedDay,
+                newZone.getId(), true, false));
+        assertEquals(FamilyProfileStore.ClockIssue.TIMEZONE_CHANGED, store().snapshot(changedDay).clockIssue);
+
+        assertTrue("Once Android reports automatic time and zone and samples remain stable, do not require Adult review",
+                state.observeClockAutomatically(changedWall + 16_000L, changedElapsed + 16_000L,
+                        changedDay, newZone.getId(), true, true));
+        assertFalse(store().snapshot(changedDay).clockUncertain);
+    }
+
+    @Test public void timezoneChangeAcrossLocalDateRequiresAdultClockReview() {
+        LocalDate lisbonDay = LocalDate.of(2026, 10, 23);
+        long firstWall = lisbonDay.atTime(0, 30).atZone(LISBON).toInstant().toEpochMilli();
+        long firstElapsed = 10_000_000L;
+        FamilyProfileStore state = store();
+        assertTrue(state.observeClock(firstWall, firstElapsed, lisbonDay, LISBON.getId()));
+
+        ZoneId newZone = ZoneId.of("America/New_York");
+        long nextWall = firstWall + 5 * FamilyTimePolicy.MINUTE_MS;
+        LocalDate localDayAfterZoneChange = java.time.Instant.ofEpochMilli(nextWall)
+                .atZone(newZone).toLocalDate();
+        assertFalse("Automatic time alone must not trust a manual time-zone change to another quota day",
+                state.observeClockAutomatically(nextWall, firstElapsed + 5 * FamilyTimePolicy.MINUTE_MS,
+                        localDayAfterZoneChange, newZone.getId(), true, false));
+
+        FamilyProfileStore.Snapshot blocked = store().snapshot(localDayAfterZoneChange);
+        assertTrue(blocked.clockUncertain);
+        assertEquals(FamilyProfileStore.ClockIssue.TIMEZONE_CHANGED, blocked.clockIssue);
+        assertFalse(FamilyTimePolicy.evaluate(FamilyTimePolicy.Profile.CHILD_TV,
+                java.time.ZonedDateTime.of(2026, 10, 22, 20, 35, 0, 0, newZone),
+                blocked.childUsedMs, blocked.childExtensionMs, blocked.clockUncertain,
+                blocked.childSchedule).allowed);
+
+        assertTrue("Only an authenticated Adult review clears the date-changing zone marker",
+                state.confirmClock(nextWall, firstElapsed + 5 * FamilyTimePolicy.MINUTE_MS,
+                        localDayAfterZoneChange, newZone.getId()));
         assertFalse(store().snapshot(localDayAfterZoneChange).clockUncertain);
     }
 

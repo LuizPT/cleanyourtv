@@ -2165,13 +2165,22 @@ public class MainActivity extends Activity implements AppAdapter.TileListener {
     private FamilyProfileStore.Snapshot observeFamilyClock(ZonedDateTime now) {
         if (familyStore == null || now == null) return null;
         familyStore.observeClockAutomatically(now.toInstant().toEpochMilli(), SystemClock.elapsedRealtime(),
-                now.toLocalDate(), ZoneId.systemDefault().getId(), isAutomaticTimeEnabled());
+                now.toLocalDate(), ZoneId.systemDefault().getId(), isAutomaticTimeEnabled(),
+                isAutomaticTimeZoneEnabled());
         return familyStore.snapshot(now.toLocalDate());
     }
 
     private boolean isAutomaticTimeEnabled() {
         try {
             return Settings.Global.getInt(getContentResolver(), Settings.Global.AUTO_TIME, 0) == 1;
+        } catch (RuntimeException unavailable) {
+            return false;
+        }
+    }
+
+    private boolean isAutomaticTimeZoneEnabled() {
+        try {
+            return Settings.Global.getInt(getContentResolver(), Settings.Global.AUTO_TIME_ZONE, 0) == 1;
         } catch (RuntimeException unavailable) {
             return false;
         }
@@ -2193,13 +2202,14 @@ public class MainActivity extends Activity implements AppAdapter.TileListener {
     private FamilyProfileStore.Snapshot reconcileFamilyForLauncher() {
         if (familyStore == null) return null;
         ZonedDateTime now = familyNow();
+        familyStore.observeClockAutomatically(now.toInstant().toEpochMilli(), SystemClock.elapsedRealtime(),
+                now.toLocalDate(), ZoneId.systemDefault().getId(), isAutomaticTimeEnabled(),
+                isAutomaticTimeZoneEnabled());
         boolean hadSession = familyStore.hasPendingSession();
         FamilyProfileStore.UsageUpdate update = familyStore.reconcileForLauncherUpdate(
                 now.toInstant().toEpochMilli(), SystemClock.elapsedRealtime(), SystemClock.uptimeMillis(),
                 now.toLocalDate(), ZoneId.systemDefault().getId());
         if (hadSession) handleFamilyUsageUpdate(update);
-        familyStore.observeClockAutomatically(now.toInstant().toEpochMilli(), SystemClock.elapsedRealtime(),
-                now.toLocalDate(), ZoneId.systemDefault().getId(), isAutomaticTimeEnabled());
         return familyStore.snapshot(now.toLocalDate());
     }
 

@@ -17,6 +17,7 @@ import android.os.IBinder;
 import android.os.Looper;
 import android.os.PowerManager;
 import android.os.SystemClock;
+import android.provider.Settings;
 import android.widget.Toast;
 
 import java.io.File;
@@ -26,6 +27,7 @@ import java.time.ZonedDateTime;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.TimeZone;
+import java.util.concurrent.atomic.AtomicBoolean;
 
 /**
  * Runs only while a family profile has launched another app. Usage Access supplies package-level
@@ -39,6 +41,7 @@ public final class FamilySessionMonitorService extends Service {
     private static final long HOME_RETRY_MS = 4_000L;
 
     private final Handler mainHandler = new Handler(Looper.getMainLooper());
+    private final AtomicBoolean clockTransitionPending = new AtomicBoolean();
     private HandlerThread workerThread;
     private Handler workerHandler;
     private FamilyProfileStore store;
@@ -58,12 +61,29 @@ public final class FamilySessionMonitorService extends Service {
                 || Intent.ACTION_TIMEZONE_CHANGED.equals(action);
     }
 
+    private boolean isAutomaticTimeEnabled() {
+        try {
+            return Settings.Global.getInt(getContentResolver(), Settings.Global.AUTO_TIME, 0) == 1;
+        } catch (RuntimeException unavailable) {
+            return false;
+        }
+    }
+
+    private boolean isAutomaticTimeZoneEnabled() {
+        try {
+            return Settings.Global.getInt(getContentResolver(), Settings.Global.AUTO_TIME_ZONE, 0) == 1;
+        } catch (RuntimeException unavailable) {
+            return false;
+        }
+    }
+
     private final BroadcastReceiver screenReceiver = new BroadcastReceiver() {
         @Override public void onReceive(Context context, Intent intent) {
             if (store == null || intent == null) return;
             String action = intent.getAction();
             if (Intent.ACTION_TIMEZONE_CHANGED.equals(action)) TimeZone.setDefault(null);
             if (isFamilyClockChange(action)) {
+                clockTransitionPending.set(true);
                 Handler worker = workerHandler;
                 if (worker != null) worker.post(FamilySessionMonitorService.this::pollForeground);
                 return;
@@ -76,10 +96,15 @@ public final class FamilySessionMonitorService extends Service {
             if (worker == null) return;
             worker.post(() -> {
                 if (!store.isEnabled()) return;
+                long wallMillis = now.toInstant().toEpochMilli();
+                long elapsedMillis = SystemClock.elapsedRealtime();
+                store.observeClockAutomatically(wallMillis, elapsedMillis, now.toLocalDate(),
+                        ZoneId.systemDefault().getId(), isAutomaticTimeEnabled(),
+                        isAutomaticTimeZoneEnabled());
                 if (!screenOn) store.markReturnHomeOnWake();
                 if (store.hasPendingSession()) {
-                    store.setSessionScreenOn(screenOn, now.toLocalDate(), now.toInstant().toEpochMilli(),
-                            SystemClock.elapsedRealtime(), SystemClock.uptimeMillis());
+                    store.setSessionScreenOn(screenOn, now.toLocalDate(), wallMillis,
+                            elapsedMillis, SystemClock.uptimeMillis());
                 }
                 if (screenOn && store.snapshot(now.toLocalDate()).mustReturnHome) {
                     mainHandler.postDelayed(FamilySessionMonitorService.this::returnHome, 250L);
@@ -176,6 +201,11 @@ public final class FamilySessionMonitorService extends Service {
         long wallNow = now.toInstant().toEpochMilli();
         long elapsedNow = SystemClock.elapsedRealtime();
         long uptimeNow = SystemClock.uptimeMillis();
+        if (clockTransitionPending.getAndSet(false)) {
+            store.observeClockAutomatically(wallNow, elapsedNow, now.toLocalDate(),
+                    ZoneId.systemDefault().getId(), isAutomaticTimeEnabled(),
+                    isAutomaticTimeZoneEnabled());
+        }
         FamilyProfileStore.Snapshot before = store.snapshot(now.toLocalDate());
         if (before.mustReturnHome) {
             hideTimeBar();
