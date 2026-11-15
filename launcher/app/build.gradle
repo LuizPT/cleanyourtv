@@ -28,6 +28,22 @@ android {
         }
     }
 
+    packaging {
+        resources {
+            // Kotlin compiler/reflection metadata is carried by AndroidX's Kotlin stdlib, but this
+            // launcher is Java-only and has no kotlin-reflect runtime dependency.
+            excludes += [
+                    'kotlin/annotation/annotation.kotlin_builtins',
+                    'kotlin/collections/collections.kotlin_builtins',
+                    'kotlin/coroutines/coroutines.kotlin_builtins',
+                    'kotlin/internal/internal.kotlin_builtins',
+                    'kotlin/kotlin.kotlin_builtins',
+                    'kotlin/ranges/ranges.kotlin_builtins',
+                    'kotlin/reflect/reflect.kotlin_builtins'
+            ]
+        }
+    }
+
     compileOptions {
         sourceCompatibility JavaVersion.VERSION_17
         targetCompatibility JavaVersion.VERSION_17
