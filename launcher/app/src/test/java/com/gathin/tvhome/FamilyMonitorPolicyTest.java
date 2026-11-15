@@ -96,6 +96,45 @@ public class FamilyMonitorPolicyTest {
                         true, true, Long.MAX_VALUE, false));
     }
 
+    @Test public void adultSessionDoesNotReturnHomeForUnknownForegroundMissingAccessOrClockChanges() {
+        for (FamilyMonitorPolicy.Foreground foreground : new FamilyMonitorPolicy.Foreground[] {
+                FamilyMonitorPolicy.Foreground.UNKNOWN, FamilyMonitorPolicy.Foreground.APP,
+                FamilyMonitorPolicy.Foreground.SETTINGS }) {
+            assertEquals(foreground.name(), FamilyMonitorPolicy.Action.KEEP_RUNNING,
+                    FamilyMonitorPolicy.decide(true, false, true, true, FamilyProfileStore.Profile.ADULT,
+                            foreground, OPEN, Long.MAX_VALUE, 0L, true, true,
+                            FamilyMonitorPolicy.MONITOR_STALE_MS * 4L));
+        }
+        assertEquals(FamilyMonitorPolicy.Action.KEEP_RUNNING,
+                FamilyMonitorPolicy.decide(true, false, true, true, FamilyProfileStore.Profile.ADULT,
+                        FamilyMonitorPolicy.Foreground.UNKNOWN, OPEN, Long.MAX_VALUE, 0L, true, true,
+                        30L * 60L * 1000L));
+    }
+
+    @Test public void adultUnknownForegroundBeyondThirtySecondsDoesNotReturnHome() {
+        assertEquals(FamilyMonitorPolicy.Action.KEEP_RUNNING,
+                FamilyMonitorPolicy.decide(true, true, true, true, FamilyProfileStore.Profile.ADULT,
+                        FamilyMonitorPolicy.Foreground.UNKNOWN, OPEN, 0L, 0L, false, false,
+                        FamilyMonitorPolicy.MONITOR_STALE_MS + 1L));
+    }
+
+    @Test public void adultSessionStillPausesOnRealScreenOffAndEndsAtLauncher() {
+        assertEquals(FamilyMonitorPolicy.Action.PAUSE,
+                decide(FamilyProfileStore.Profile.ADULT, FamilyMonitorPolicy.Foreground.UNKNOWN,
+                        false, false, Long.MAX_VALUE, true));
+        assertEquals(FamilyMonitorPolicy.Action.FINISH_SESSION,
+                FamilyMonitorPolicy.decide(true, false, true, true, FamilyProfileStore.Profile.ADULT,
+                        FamilyMonitorPolicy.Foreground.LAUNCHER, OPEN, 0L, 0L, false,
+                        true, 30L * 60L * 1000L));
+    }
+
+    @Test public void sessionServicePollsOnlyProfilesWithTimeLimits() {
+        assertEquals(false, FamilySessionMonitorService.shouldPollForeground(FamilyProfileStore.Profile.ADULT));
+        assertEquals(true, FamilySessionMonitorService.shouldPollForeground(FamilyProfileStore.Profile.CHILD_TV));
+        assertEquals(true, FamilySessionMonitorService.shouldPollForeground(FamilyProfileStore.Profile.XBOX));
+        assertEquals(true, FamilySessionMonitorService.shouldPollForeground(null));
+    }
+
     @Test public void disabledFeatureOrFinishedSessionStopsTheMonitor() {
         assertEquals(FamilyMonitorPolicy.Action.STOP,
                 FamilyMonitorPolicy.decide(false, true, true, true, FamilyProfileStore.Profile.CHILD_TV,

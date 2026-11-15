@@ -93,6 +93,66 @@ public class FamilyProfileStoreTest {
         assertEquals(FamilyProfileStore.TimeBarContent.BOTH, snapshot.timeBarContent);
     }
 
+    @Test public void newSessionClearsAStaleWakeReturnFlagFromThePreviousSession() {
+        LocalDate day = LocalDate.of(2026, 11, 15);
+        Properties oldState = new Properties();
+        oldState.setProperty("must_return_home", "true");
+        try {
+            writeProperties(oldState);
+        } catch (Exception error) {
+            throw new AssertionError(error);
+        }
+        FamilyProfileStore state = store();
+        assertTrue(state.startSession(FamilyProfileStore.Profile.ADULT, "tv.app", day,
+                wall(day, 20, 0), 100_000L, 100_000L, true));
+        assertFalse(state.snapshot(day).mustReturnHome);
+        assertEquals(FamilyProfileStore.Profile.ADULT, state.snapshot(day).sessionProfile);
+    }
+
+    @Test public void adultSessionCanReconcileThirtyMinutesWithoutConsumingChildOrXboxBalances() {
+        LocalDate day = LocalDate.of(2026, 11, 15);
+        FamilyProfileStore state = store();
+        long startWall = wall(day, 20, 0);
+        assertTrue(state.startSession(FamilyProfileStore.Profile.ADULT, "tv.app", day,
+                startWall, 100_000L, 100_000L, true));
+        assertTrue(state.setSessionForeground(true, "tv.app", day,
+                startWall, 100_000L, 100_000L).saved);
+        FamilyProfileStore.UsageUpdate after = state.setSessionForeground(true, "tv.app", day,
+                startWall + 30L * 60L * 1000L, 100_000L + 30L * 60L * 1000L,
+                100_000L + 30L * 60L * 1000L);
+        assertTrue(after.saved);
+        FamilyProfileStore.Snapshot snapshot = store().snapshot(day);
+        assertEquals(0L, snapshot.childUsedMs);
+        assertEquals(0L, snapshot.xboxUsedMs);
+        assertFalse(snapshot.clockUncertain);
+        assertTrue(snapshot.sessionPending);
+    }
+
+    @Test public void automaticClockRecoveryRetryIsScheduledOnlyForRecoverableMarkers() throws Exception {
+        LocalDate day = LocalDate.of(2026, 11, 15);
+        Properties marker = new Properties();
+        marker.setProperty("clock_uncertain", "true");
+        marker.setProperty("clock_uncertain_reason", "DEVICE_RESTARTED");
+        marker.setProperty("clock_issue_day", day.toString());
+        marker.setProperty("clock_issue_elapsed_ms", "100000");
+        writeProperties(marker);
+        FamilyProfileStore state = store();
+        assertEquals(5_000L, state.automaticClockRecoveryDelayMs(110_000L, day, true, true));
+        assertEquals(0L, state.automaticClockRecoveryDelayMs(115_000L, day, true, true));
+        assertEquals(-1L, state.automaticClockRecoveryDelayMs(110_000L, day, false, true));
+
+        marker.setProperty("clock_uncertain_reason", "TIMEZONE_CHANGED");
+        writeProperties(marker);
+        assertEquals(-1L, store().automaticClockRecoveryDelayMs(110_000L, day, true, false));
+        marker.setProperty("clock_uncertain_reason", "SESSION_UNRECONCILED");
+        writeProperties(marker);
+        assertEquals(-1L, store().automaticClockRecoveryDelayMs(110_000L, day, true, true));
+        marker.setProperty("clock_uncertain_reason", "LEGACY_V22");
+        writeProperties(marker);
+        assertEquals(-1L, store().automaticClockRecoveryDelayMs(120_000L, day, true, true));
+        assertEquals(0L, store().automaticClockRecoveryDelayMs(120_000L, day.plusDays(1), true, true));
+    }
+
     @Test public void childAppVisibilityIsSeededOnceAndPersistsIndependently() {
         FamilyProfileStore first = store();
         assertTrue(first.initializeChildApps(Arrays.asList("video.one", "game.two", "bad,name")));

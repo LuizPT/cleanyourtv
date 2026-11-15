@@ -37,8 +37,16 @@ final class FamilyMonitorPolicy {
                          boolean foregroundObserved, long sessionAgeMs, FamilyTimePolicy.Schedule schedule,
                          boolean diagnostic, long diagnosticRemainingMs) {
         if (!familyEnabled || !sessionPending) return Action.STOP;
-        if (!usageAccess) return Action.RETURN_HOME;
         if (!screenOn) return Action.PAUSE;
+        if (profile == FamilyProfileStore.Profile.ADULT) {
+            if (foreground == Foreground.LAUNCHER) {
+                return foregroundObserved ? Action.FINISH_SESSION : Action.WAIT_FOR_LAUNCH;
+            }
+            // Adult has no quota. UsageStats can briefly return no package during TV app
+            // transitions, so a missing observation must never evict an authenticated Adult.
+            return Action.KEEP_RUNNING;
+        }
+        if (!usageAccess) return Action.RETURN_HOME;
         if (profile == null || now == null) return Action.RETURN_HOME;
         if (foreground == Foreground.LAUNCHER) {
             // The service can start before Android switches away from Home. Do not end an
@@ -52,8 +60,6 @@ final class FamilyMonitorPolicy {
         if (foreground == Foreground.SETTINGS && profile != FamilyProfileStore.Profile.ADULT) {
             return Action.RETURN_HOME;
         }
-        if (profile == FamilyProfileStore.Profile.ADULT) return Action.KEEP_RUNNING;
-
         if (diagnostic) {
             if (clockUncertain || schedule == null) return Action.RETURN_HOME;
             return diagnosticRemainingMs > 0L ? Action.KEEP_RUNNING : Action.RETURN_HOME;

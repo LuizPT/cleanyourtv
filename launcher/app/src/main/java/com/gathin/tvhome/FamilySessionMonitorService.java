@@ -42,6 +42,7 @@ public final class FamilySessionMonitorService extends Service {
 
     private final Handler mainHandler = new Handler(Looper.getMainLooper());
     private final AtomicBoolean clockTransitionPending = new AtomicBoolean();
+    private final FamilyScreenTransitionPolicy screenTransitions = new FamilyScreenTransitionPolicy();
     private HandlerThread workerThread;
     private Handler workerHandler;
     private FamilyProfileStore store;
@@ -88,30 +89,49 @@ public final class FamilySessionMonitorService extends Service {
                 if (worker != null) worker.post(FamilySessionMonitorService.this::pollForeground);
                 return;
             }
-            boolean screenOn = Intent.ACTION_SCREEN_ON.equals(action);
-            if (!screenOn && !Intent.ACTION_SCREEN_OFF.equals(action)) return;
-            ZonedDateTime now = ZonedDateTime.now(ZoneId.systemDefault());
-            if (!screenOn) hideTimeBar();
-            Handler worker = workerHandler;
-            if (worker == null) return;
-            worker.post(() -> {
-                if (!store.isEnabled()) return;
-                long wallMillis = now.toInstant().toEpochMilli();
-                long elapsedMillis = SystemClock.elapsedRealtime();
-                store.observeClockAutomatically(wallMillis, elapsedMillis, now.toLocalDate(),
-                        ZoneId.systemDefault().getId(), isAutomaticTimeEnabled(),
-                        isAutomaticTimeZoneEnabled());
-                if (!screenOn) store.markReturnHomeOnWake();
-                if (store.hasPendingSession()) {
-                    store.setSessionScreenOn(screenOn, now.toLocalDate(), wallMillis,
-                            elapsedMillis, SystemClock.uptimeMillis());
-                }
-                if (screenOn && store.snapshot(now.toLocalDate()).mustReturnHome) {
-                    mainHandler.postDelayed(FamilySessionMonitorService.this::returnHome, 250L);
-                }
-            });
+            boolean screenOnAction = Intent.ACTION_SCREEN_ON.equals(action);
+            if (!screenOnAction && !Intent.ACTION_SCREEN_OFF.equals(action)) return;
+            boolean interactive = isScreenOn();
+            if (screenOnAction != interactive) {
+                Handler worker = workerHandler;
+                if (worker != null) worker.postDelayed(
+                        () -> handleScreenTransition(screenOnAction, isScreenOn()),
+                        FamilyScreenTransitionPolicy.BROADCAST_STATE_SETTLE_MS);
+                return;
+            }
+            handleScreenTransition(screenOnAction, interactive);
         }
     };
+
+    private void handleScreenTransition(boolean screenOnAction, boolean deviceInteractive) {
+        if (store == null) return;
+        FamilyProfileStore.Snapshot before = store.snapshot(LocalDate.now(ZoneId.systemDefault()));
+        boolean persistedScreenOff = before.sessionPending && !before.sessionScreenOn;
+        FamilyScreenTransitionPolicy.Transition transition = screenTransitions.accept(
+                screenOnAction, deviceInteractive, persistedScreenOff);
+        if (transition == FamilyScreenTransitionPolicy.Transition.IGNORE) return;
+        final boolean screenOn = transition == FamilyScreenTransitionPolicy.Transition.SCREEN_ON;
+        ZonedDateTime now = ZonedDateTime.now(ZoneId.systemDefault());
+        if (!screenOn) hideTimeBar();
+        Handler worker = workerHandler;
+        if (worker == null) return;
+        worker.post(() -> {
+            if (!store.isEnabled()) return;
+            long wallMillis = now.toInstant().toEpochMilli();
+            long elapsedMillis = SystemClock.elapsedRealtime();
+            store.observeClockAutomatically(wallMillis, elapsedMillis, now.toLocalDate(),
+                    ZoneId.systemDefault().getId(), isAutomaticTimeEnabled(),
+                    isAutomaticTimeZoneEnabled());
+            if (!screenOn) store.markReturnHomeOnWake();
+            if (store.hasPendingSession()) {
+                store.setSessionScreenOn(screenOn, now.toLocalDate(), wallMillis,
+                        elapsedMillis, SystemClock.uptimeMillis());
+            }
+            if (screenOn && store.snapshot(now.toLocalDate()).mustReturnHome) {
+                mainHandler.postDelayed(FamilySessionMonitorService.this::returnHome, 250L);
+            }
+        });
+    }
 
     @Override public void onCreate() {
         super.onCreate();
@@ -146,6 +166,13 @@ public final class FamilySessionMonitorService extends Service {
             workerHandler.removeCallbacksAndMessages(null);
             workerHandler.post(() -> {
                 if (finishing) return;
+                FamilyProfileStore.Snapshot snapshot = store.snapshot(LocalDate.now(ZoneId.systemDefault()));
+                if (!shouldPollForeground(snapshot.sessionProfile)) {
+                    // Adult has no quota. Its session stays alive only to return to the launcher after
+                    // a confirmed screen wake; UsageStats gaps and clock changes must not evict it.
+                    if (snapshot.mustReturnHome && isScreenOn()) returnHome();
+                    return;
+                }
                 if (usageStats == null || !FamilyUsageAccess.isGranted(FamilySessionMonitorService.this)) {
                     showMonitorFailure();
                     hideTimeBar();
@@ -153,7 +180,6 @@ public final class FamilySessionMonitorService extends Service {
                     schedulePoll();
                     return;
                 }
-                FamilyProfileStore.Snapshot snapshot = store.snapshot(LocalDate.now(ZoneId.systemDefault()));
                 tracker = new FamilyForegroundTracker(snapshot.sessionPackageObserved
                         ? snapshot.sessionPackage : null);
                 pollForeground();
@@ -190,6 +216,8 @@ public final class FamilySessionMonitorService extends Service {
             stopMonitor();
             return;
         }
+        FamilyProfileStore.Snapshot session = store.snapshot(LocalDate.now(ZoneId.systemDefault()));
+        if (!shouldPollForeground(session.sessionProfile)) return;
         if (!FamilyUsageAccess.isGranted(this)) {
             showMonitorFailure();
             hideTimeBar();
@@ -400,6 +428,11 @@ public final class FamilySessionMonitorService extends Service {
         return power == null || power.isInteractive();
     }
 
+    static boolean shouldPollForeground(FamilyProfileStore.Profile profile) {
+        // Unknown persisted profiles fail closed; only the quota-free Adult session skips polling.
+        return profile != FamilyProfileStore.Profile.ADULT;
+    }
+
     private synchronized void returnHome() {
         if (finishing) return;
         long nowElapsed = SystemClock.elapsedRealtime();
@@ -468,7 +501,8 @@ public final class FamilySessionMonitorService extends Service {
     private void schedulePoll() {
         Handler worker = workerHandler;
         if (finishing || worker == null) return;
-        if (store != null && store.hasPendingSession()) {
+        if (store != null && store.hasPendingSession()
+                && shouldPollForeground(store.snapshot(LocalDate.now(ZoneId.systemDefault())).sessionProfile)) {
             worker.postDelayed(() -> {
                 if (finishing) return;
                 pollForeground();

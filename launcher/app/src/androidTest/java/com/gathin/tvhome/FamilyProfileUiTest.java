@@ -61,12 +61,16 @@ public final class FamilyProfileUiTest {
     private SavedFile originalOverlayTestFile;
     private Activity activity;
     private char[] testPin;
+    private int originalAutoTime = -1;
+    private int originalAutoTimeZone = -1;
 
     @Before public void setUp() throws Exception {
         Assume.assumeTrue("Family profile UI tests are restricted to Android emulators", isEmulator());
         InstrumentationRegistry.getInstrumentation().sendKeyDownUpSync(KeyEvent.KEYCODE_HOME);
         InstrumentationRegistry.getInstrumentation().waitForIdleSync();
         Context target = InstrumentationRegistry.getInstrumentation().getTargetContext();
+        originalAutoTime = Settings.Global.getInt(target.getContentResolver(), Settings.Global.AUTO_TIME, 0);
+        originalAutoTimeZone = Settings.Global.getInt(target.getContentResolver(), Settings.Global.AUTO_TIME_ZONE, 0);
         familyFile = new File(target.getFilesDir(), "family-profiles.properties");
         pinFile = new File(target.getFilesDir(), "launcher-state.properties");
         overlayTestFile = new File(target.getFilesDir(), "family-time-bar-ui-test.properties");
@@ -176,6 +180,11 @@ public final class FamilyProfileUiTest {
         assertTrue("Manual refresh must update the existing selector in place",
                 originalSelector == refreshedSelector && refreshedSelector.isShowing());
         assertFocusedView(R.id.familyProfileRefresh, "Refresh should retain D-pad focus");
+        clickView(R.id.familyProfileRefresh);
+        InstrumentationRegistry.getInstrumentation().waitForIdleSync();
+        assertTrue("Repeated refresh must not replace the selector",
+                originalSelector == field(activity, "familySelectorDialog", Dialog.class)
+                        && originalSelector.isShowing());
         assertNull("Refresh must not open the Adult sequence prompt",
                 activity.findViewById(R.id.familyAdultAuthPanel));
         FamilyProfileStore.Snapshot after = store.snapshot(today);
@@ -192,6 +201,8 @@ public final class FamilyProfileUiTest {
     }
 
     @Test public void uncertainClockRefreshStaysUnauthenticatedAndKeepsFailClosedState() throws Exception {
+        setGlobalSetting("auto_time", 1);
+        setGlobalSetting("auto_time_zone", 1);
         launchMainActivity();
         awaitVisibleText(getString(R.string.family_select_profile));
         Dialog originalSelector = field(activity, "familySelectorDialog", Dialog.class);
@@ -233,7 +244,6 @@ public final class FamilyProfileUiTest {
 
         if (automaticTime) {
             Thread.sleep(16_000L);
-            clickView(R.id.familyProfileRefresh);
             InstrumentationRegistry.getInstrumentation().waitForIdleSync();
             assertNull("Stable clock recovery never opens Adult authentication",
                     activity.findViewById(R.id.familyAdultAuthPanel));
@@ -648,7 +658,7 @@ public final class FamilyProfileUiTest {
                 awaitViewById(R.id.unlock_sequence_progress));
     }
 
-    @Test public void screenOffInvalidatesAdultReentryAuthorization() throws Exception {
+    @Test public void duplicateOrOutOfOrderScreenEventsDoNotRevokeAdultButRealWakeDoes() throws Exception {
         launchMainActivity();
         awaitVisibleText(getString(R.string.family_select_profile));
         clickView(R.id.familyProfileAdult);
@@ -659,14 +669,26 @@ public final class FamilyProfileUiTest {
         assertEquals(FamilyTimePolicy.Profile.ADULT,
                 field(activity, "activeFamilyProfile", FamilyTimePolicy.Profile.class));
 
-        BroadcastReceiver receiver = field(activity, "familyScreenReceiver", BroadcastReceiver.class);
-        InstrumentationRegistry.getInstrumentation().runOnMainSync(() -> receiver.onReceive(activity,
-                new Intent(Intent.ACTION_SCREEN_OFF)));
+        InstrumentationRegistry.getInstrumentation().runOnMainSync(() ->
+                ((MainActivity) activity).handleFamilyScreenAction(Intent.ACTION_SCREEN_ON, true));
+        assertEquals("A duplicate SCREEN_ON cannot clear the active Adult profile",
+                FamilyTimePolicy.Profile.ADULT,
+                field(activity, "activeFamilyProfile", FamilyTimePolicy.Profile.class));
+        InstrumentationRegistry.getInstrumentation().runOnMainSync(() ->
+                ((MainActivity) activity).handleFamilyScreenAction(Intent.ACTION_SCREEN_OFF, true));
+        assertEquals("An out-of-order SCREEN_OFF while interactive is ignored",
+                FamilyTimePolicy.Profile.ADULT,
+                field(activity, "activeFamilyProfile", FamilyTimePolicy.Profile.class));
+        InstrumentationRegistry.getInstrumentation().runOnMainSync(() ->
+                ((MainActivity) activity).handleFamilyScreenAction(Intent.ACTION_SCREEN_OFF, false));
         InstrumentationRegistry.getInstrumentation().waitForIdleSync();
         awaitVisibleText(getString(R.string.family_select_profile));
         assertEquals("Screen-off must leave Adult", null,
                 field(activity, "activeFamilyProfile", FamilyTimePolicy.Profile.class));
 
+        InstrumentationRegistry.getInstrumentation().runOnMainSync(() ->
+                ((MainActivity) activity).handleFamilyScreenAction(Intent.ACTION_SCREEN_ON, true));
+        InstrumentationRegistry.getInstrumentation().waitForIdleSync();
         clickView(R.id.familyProfileAdult);
         awaitVisibleText(getString(R.string.family_adult_auth_subtitle));
         assertNotNull("Screen-off must require the sequence on the next Adult entry",
@@ -989,10 +1011,15 @@ public final class FamilyProfileUiTest {
                 InstrumentationRegistry.getInstrumentation().waitForIdleSync();
             }
         } finally {
-            restore(familyFile, originalFamily);
-            restore(pinFile, originalPin);
-            restore(overlayTestFile, originalOverlayTestFile);
-            if (testPin != null) Arrays.fill(testPin, '\0');
+            try {
+                if (originalAutoTime >= 0) setGlobalSetting("auto_time", originalAutoTime);
+                if (originalAutoTimeZone >= 0) setGlobalSetting("auto_time_zone", originalAutoTimeZone);
+            } finally {
+                restore(familyFile, originalFamily);
+                restore(pinFile, originalPin);
+                restore(overlayTestFile, originalOverlayTestFile);
+                if (testPin != null) Arrays.fill(testPin, '\0');
+            }
         }
     }
 
@@ -1149,6 +1176,18 @@ public final class FamilyProfileUiTest {
                 InstrumentationRegistry.getInstrumentation().getUiAutomation().executeShellCommand(command))) {
             byte[] buffer = new byte[256];
             while (output.read(buffer) != -1) { /* Wait until the shell command has completed. */ }
+        }
+    }
+
+    private static void setGlobalSetting(String name, int value) throws IOException {
+        if (!"auto_time".equals(name) && !"auto_time_zone".equals(name)) {
+            throw new IllegalArgumentException("Unsupported test setting");
+        }
+        String command = "settings put global " + name + " " + value;
+        try (java.io.InputStream output = new android.os.ParcelFileDescriptor.AutoCloseInputStream(
+                InstrumentationRegistry.getInstrumentation().getUiAutomation().executeShellCommand(command))) {
+            byte[] buffer = new byte[128];
+            while (output.read(buffer) != -1) { /* Wait for the setting command to finish. */ }
         }
     }
 

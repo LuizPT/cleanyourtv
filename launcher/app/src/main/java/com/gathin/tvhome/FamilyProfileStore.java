@@ -410,6 +410,33 @@ final class FamilyProfileStore {
         }
     }
 
+    /** Delay until an automatic clock recovery can be evaluated again, or -1 when it cannot recover automatically. */
+    synchronized long automaticClockRecoveryDelayMs(long elapsedMillis, LocalDate day,
+                                                    boolean automaticTimeEnabled,
+                                                    boolean automaticTimeZoneEnabled) {
+        if (day == null) return -1L;
+        synchronized (STORAGE_FILE_LOCK) {
+            Properties p = read();
+            if (storageError || p.getProperty(SESSION_PROFILE) != null
+                    || !Boolean.parseBoolean(p.getProperty(CLOCK_UNCERTAIN, "false"))) return -1L;
+            ClockIssue issue = enumValue(ClockIssue.class,
+                    p.getProperty(CLOCK_UNCERTAIN_REASON), ClockIssue.NONE);
+            if (issue == ClockIssue.NONE || issue == ClockIssue.SESSION_UNRECONCILED) return -1L;
+            if (issue == ClockIssue.LEGACY_V22) {
+                String issueDay = p.getProperty(CLOCK_ISSUE_DAY);
+                if (!validDay(issueDay) || day.toString().compareTo(issueDay) <= 0) return -1L;
+            } else if (!automaticTimeEnabled
+                    || (issue == ClockIssue.TIMEZONE_CHANGED && !automaticTimeZoneEnabled)) {
+                return -1L;
+            }
+            String anchorValue = p.getProperty(CLOCK_ISSUE_ELAPSED);
+            if (anchorValue == null) return CLOCK_STABLE_MS;
+            long anchor = number(p, CLOCK_ISSUE_ELAPSED, elapsedMillis);
+            if (elapsedMillis < anchor) return CLOCK_STABLE_MS;
+            return Math.max(0L, CLOCK_STABLE_MS - (elapsedMillis - anchor));
+        }
+    }
+
     /** Adult authenticated this adjustment. Usage records remain intact. */
     synchronized boolean confirmClock(long wallMillis, long elapsedMillis, LocalDate day) {
         return confirmClock(wallMillis, elapsedMillis, day, ZoneId.systemDefault().getId());

@@ -112,6 +112,7 @@ public class MainActivity extends Activity implements AppAdapter.TileListener {
     private boolean familySelectorShowing;
     private Dialog familySelectorDialog;
     private boolean familyScreenReceiverRegistered;
+    private final FamilyScreenTransitionPolicy familyScreenTransitions = new FamilyScreenTransitionPolicy();
     private View familySelectorAdultTile;
     private View familySelectorChildTile;
     private View familySelectorXboxTile;
@@ -172,6 +173,18 @@ public class MainActivity extends Activity implements AppAdapter.TileListener {
     private PopupWindow openPopup;
 
     private final Handler handler = new Handler(Looper.getMainLooper());
+    private final Runnable familyClockRecoveryRetry = () -> {
+        if (!familyActivityResumed || familyStore == null) return;
+        observeFamilyClockNow();
+        if (familyStore.hasStorageError()) return;
+        updateFamilyStatus();
+        refreshFamilyProfileAccess(true);
+        if (familySelectorDialog != null && familySelectorDialog.isShowing()) {
+            refreshFamilyProfileSelectorViews();
+        } else if (activeFamilyProfile == null) {
+            maybeShowFamilyProfileSelector();
+        }
+    };
     private final BroadcastReceiver familyScreenReceiver = new BroadcastReceiver() {
         @Override public void onReceive(Context context, Intent intent) {
             if (intent == null) return;
@@ -181,34 +194,20 @@ public class MainActivity extends Activity implements AppAdapter.TileListener {
                 handler.post(() -> refreshFamilyClockAfterSystemChange());
                 return;
             }
-            boolean on = Intent.ACTION_SCREEN_ON.equals(action);
-            if (!on && !Intent.ACTION_SCREEN_OFF.equals(action)) return;
-            // A screen-on event also closes the re-entry window if this device missed SCREEN_OFF.
-            adultProfileAccessWindow.invalidate();
-            if (familyStore == null) return;
-            if (!familyStore.isEnabled() && !familyStore.hasPendingSession()) return;
-            if (on && activeFamilyProfile == FamilyTimePolicy.Profile.ADULT) setActiveFamilyProfile(null);
-            if (!on) familyStore.markReturnHomeOnWake();
-            FamilyProfileStore.UsageUpdate update = familyStore.setSessionScreenOn(on, familyToday(),
-                    System.currentTimeMillis(), SystemClock.elapsedRealtime(), SystemClock.uptimeMillis());
-            handleFamilyUsageUpdate(update);
-            if (!on) {
-                setActiveFamilyProfile(null);
-            } else if (familyActivityResumed) {
-                handler.postDelayed(MainActivity.this::maybeShowFamilyProfileSelector, 350L);
+            boolean screenOn = Intent.ACTION_SCREEN_ON.equals(action);
+            if (!screenOn && !Intent.ACTION_SCREEN_OFF.equals(action)) return;
+            boolean interactive = isScreenInteractive();
+            if (screenOn != interactive) {
+                // Some TV firmwares deliver the power broadcast just before PowerManager catches up.
+                // Recheck once after the transition settles; stale events still fail the policy below.
+                handler.postDelayed(() -> {
+                    if (familyScreenReceiverRegistered) {
+                        handleFamilyScreenAction(action, isScreenInteractive());
+                    }
+                }, FamilyScreenTransitionPolicy.BROADCAST_STATE_SETTLE_MS);
+                return;
             }
-            if (on && familyStore.snapshot(familyToday()).mustReturnHome
-                    && !FamilyUsageAccess.isGranted(MainActivity.this)) {
-                try {
-                    startActivity(new Intent(MainActivity.this, MainActivity.class)
-                            .setAction(Intent.ACTION_MAIN).addCategory(Intent.CATEGORY_HOME)
-                            .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_ACTIVITY_CLEAR_TOP
-                                    | Intent.FLAG_ACTIVITY_SINGLE_TOP));
-                } catch (RuntimeException platformBlockedBackgroundLaunch) {
-                    // Android 9 permits this while the process is alive; newer systems may require Home manually.
-                }
-            }
-            if (on && familyActivityResumed) handler.post(MainActivity.this::refreshFamilySelectorForResume);
+            handleFamilyScreenAction(action, interactive);
         }
     };
     /** Refreshes the network pill when the connection changes: at boot Wi-Fi often connects after Home is shown. */
@@ -272,6 +271,46 @@ public class MainActivity extends Activity implements AppAdapter.TileListener {
             handler.postDelayed(this, MINUTE_MS);
         }
     };
+
+    /** Package-visible so instrumentation can reproduce stale broadcasts against a simulated power state. */
+    void handleFamilyScreenAction(String action, boolean deviceInteractive) {
+        boolean on = Intent.ACTION_SCREEN_ON.equals(action);
+        if (!on && !Intent.ACTION_SCREEN_OFF.equals(action)) return;
+        FamilyProfileStore.Snapshot before = familyStore == null ? null : familyStore.snapshot(familyToday());
+        boolean persistedScreenOff = before != null && before.sessionPending && !before.sessionScreenOn;
+        FamilyScreenTransitionPolicy.Transition transition = familyScreenTransitions.accept(
+                on, deviceInteractive, persistedScreenOff);
+        if (transition == FamilyScreenTransitionPolicy.Transition.IGNORE) return;
+        on = transition == FamilyScreenTransitionPolicy.Transition.SCREEN_ON;
+        // This transition is accepted only for a true wake, not a duplicate SCREEN_ON.
+        adultProfileAccessWindow.invalidate();
+        if (familyStore == null) return;
+        if (!familyStore.isEnabled() && !familyStore.hasPendingSession()) return;
+        if (on && activeFamilyProfile == FamilyTimePolicy.Profile.ADULT) {
+            setActiveFamilyProfile(null);
+        }
+        if (!on) familyStore.markReturnHomeOnWake();
+        FamilyProfileStore.UsageUpdate update = familyStore.setSessionScreenOn(on, familyToday(),
+                System.currentTimeMillis(), SystemClock.elapsedRealtime(), SystemClock.uptimeMillis());
+        handleFamilyUsageUpdate(update);
+        if (!on) {
+            setActiveFamilyProfile(null);
+        } else if (familyActivityResumed) {
+            handler.postDelayed(this::maybeShowFamilyProfileSelector, 350L);
+        }
+        if (on && !familyActivityResumed && familyStore.snapshot(familyToday()).mustReturnHome
+                && !FamilyUsageAccess.isGranted(this)) {
+            try {
+                startActivity(new Intent(this, MainActivity.class)
+                        .setAction(Intent.ACTION_MAIN).addCategory(Intent.CATEGORY_HOME)
+                        .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_ACTIVITY_CLEAR_TOP
+                                | Intent.FLAG_ACTIVITY_SINGLE_TOP));
+            } catch (RuntimeException platformBlockedBackgroundLaunch) {
+                // Android 9 permits this while the process is alive; newer systems may require Home manually.
+            }
+        }
+        if (on && familyActivityResumed) handler.post(this::refreshFamilySelectorForResume);
+    }
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
@@ -679,6 +718,7 @@ public class MainActivity extends Activity implements AppAdapter.TileListener {
         familyActivityResumed = false;
         unregisterReceiver(packageReceiver);
         handler.removeCallbacks(minuteTick);
+        handler.removeCallbacks(familyClockRecoveryRetry);
         // Nothing of ours stays on screen over another app; an undecided prompt simply returns next time.
         if (cardPrompt != null) cardPrompt.dismiss();
         if (openPopup != null) openPopup.dismiss();
@@ -696,6 +736,7 @@ public class MainActivity extends Activity implements AppAdapter.TileListener {
     @Override
     protected void onDestroy() {
         super.onDestroy();
+        handler.removeCallbacks(familyClockRecoveryRetry);
         if (familyScreenReceiverRegistered) {
             unregisterReceiver(familyScreenReceiver);
             familyScreenReceiverRegistered = false;
@@ -2167,7 +2208,17 @@ public class MainActivity extends Activity implements AppAdapter.TileListener {
         familyStore.observeClockAutomatically(now.toInstant().toEpochMilli(), SystemClock.elapsedRealtime(),
                 now.toLocalDate(), ZoneId.systemDefault().getId(), isAutomaticTimeEnabled(),
                 isAutomaticTimeZoneEnabled());
-        return familyStore.snapshot(now.toLocalDate());
+        FamilyProfileStore.Snapshot snapshot = familyStore.snapshot(now.toLocalDate());
+        scheduleFamilyClockRecovery(snapshot, now.toLocalDate());
+        return snapshot;
+    }
+
+    private void scheduleFamilyClockRecovery(FamilyProfileStore.Snapshot snapshot, LocalDate day) {
+        handler.removeCallbacks(familyClockRecoveryRetry);
+        if (!familyActivityResumed || familyStore == null || snapshot == null) return;
+        long delay = familyStore.automaticClockRecoveryDelayMs(SystemClock.elapsedRealtime(), day,
+                isAutomaticTimeEnabled(), isAutomaticTimeZoneEnabled());
+        if (delay >= 0L) handler.postDelayed(familyClockRecoveryRetry, Math.max(1_000L, delay));
     }
 
     private boolean isAutomaticTimeEnabled() {
@@ -2202,15 +2253,15 @@ public class MainActivity extends Activity implements AppAdapter.TileListener {
     private FamilyProfileStore.Snapshot reconcileFamilyForLauncher() {
         if (familyStore == null) return null;
         ZonedDateTime now = familyNow();
-        familyStore.observeClockAutomatically(now.toInstant().toEpochMilli(), SystemClock.elapsedRealtime(),
-                now.toLocalDate(), ZoneId.systemDefault().getId(), isAutomaticTimeEnabled(),
-                isAutomaticTimeZoneEnabled());
+        observeFamilyClock(now);
         boolean hadSession = familyStore.hasPendingSession();
         FamilyProfileStore.UsageUpdate update = familyStore.reconcileForLauncherUpdate(
                 now.toInstant().toEpochMilli(), SystemClock.elapsedRealtime(), SystemClock.uptimeMillis(),
                 now.toLocalDate(), ZoneId.systemDefault().getId());
         if (hadSession) handleFamilyUsageUpdate(update);
-        return familyStore.snapshot(now.toLocalDate());
+        FamilyProfileStore.Snapshot snapshot = familyStore.snapshot(now.toLocalDate());
+        scheduleFamilyClockRecovery(snapshot, now.toLocalDate());
+        return snapshot;
     }
 
     private void refreshFamilyClockAfterSystemChange() {
@@ -2247,6 +2298,7 @@ public class MainActivity extends Activity implements AppAdapter.TileListener {
 
     private void setActiveFamilyProfile(FamilyTimePolicy.Profile profile, boolean refreshApps) {
         if (activeFamilyProfile == profile) return;
+        if (profile != null) familyScreenTransitions.reset();
         if (profile == null || profile == FamilyTimePolicy.Profile.ADULT) {
             diagnosticMinutesNextLaunch = 0;
         }
@@ -2257,7 +2309,8 @@ public class MainActivity extends Activity implements AppAdapter.TileListener {
 
     private void startFamilySessionMonitor() {
         if (familyStore == null || !familyStore.isEnabled() || !familyStore.hasPendingSession()
-                || !FamilyUsageAccess.isGranted(this)) return;
+                || (familyStore.snapshot(familyToday()).sessionProfile != FamilyProfileStore.Profile.ADULT
+                && !FamilyUsageAccess.isGranted(this))) return;
         try {
             startForegroundService(new Intent(this, FamilySessionMonitorService.class));
         } catch (RuntimeException unavailable) {
@@ -2993,6 +3046,7 @@ public class MainActivity extends Activity implements AppAdapter.TileListener {
             Toast.makeText(this, R.string.family_storage_error, Toast.LENGTH_LONG).show();
             return;
         }
+        scheduleFamilyClockRecovery(snapshot, familyToday());
         refreshFamilyProfileSelectorViews();
         updateFamilyStatus();
         if (snapshot.clockUncertain || snapshot.sessionPending) {
@@ -3225,7 +3279,11 @@ public class MainActivity extends Activity implements AppAdapter.TileListener {
                 }
                 stopService(new Intent(this, FamilySessionMonitorService.class));
             }
-            familyStore.clearReturnHomeOnWake();
+            if (!familyStore.clearReturnHomeOnWake()) {
+                Toast.makeText(this, R.string.family_storage_error, Toast.LENGTH_LONG).show();
+                return;
+            }
+            familyScreenTransitions.reset();
             setActiveFamilyProfile(profile);
             return;
         }
